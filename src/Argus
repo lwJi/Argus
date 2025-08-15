@@ -1,0 +1,359 @@
+#!/usr/bin/env python
+
+# main.py
+import os
+import argparse
+import asyncio
+import json
+from typing import List, Dict
+from dotenv import load_dotenv, find_dotenv
+from pathlib import Path
+from rich.console import Console
+from rich.progress import Progress, SpinnerColumn, TextColumn
+from rich.table import Table
+
+from langchain_openai import ChatOpenAI
+
+from utils import (
+    list_source_files, detect_language_from_extension, chunk_code_by_lines,
+    add_line_numbers_preserve, safe_filename_from_path,
+    save_json, save_text, load_models_config, ensure_dir, content_hash,
+    count_tokens_text, get_model_name
+)
+from agents import (
+    run_worker_agent, run_supervisor_agent, run_synthesizer_agent, format_reviews_for_supervisor,
+    render_worker_prompt_text, render_supervisor_prompt_text, render_synthesizer_prompt_text
+)
+
+console = Console()
+
+DEFAULT_MAX_LINES = 500  # chunking threshold
+DEFAULT_CHUNK_SIZE = 400
+
+
+def build_llms(models_cfg: dict) -> Dict[str, ChatOpenAI]:
+    """
+    models.yaml (optional) example:
+    workers:
+      - model: gpt-4o
+        temperature: 0.2
+      - model: gpt-4o
+        temperature: 0.7
+    supervisor:
+      model: gpt-4o
+      temperature: 0.1
+    """
+    workers = []
+    for w in (models_cfg.get("workers") or []):
+        workers.append(ChatOpenAI(
+            model=w["model"], temperature=w.get("temperature", 0.3)))
+    if not workers:
+        # Fall back if no config
+        workers = [
+            ChatOpenAI(model="gpt-4o-mini", temperature=0.7),
+            ChatOpenAI(model="gpt-4o", temperature=0.2),
+        ]
+    sup_cfg = models_cfg.get("supervisor") or {
+        "model": "gpt-4o", "temperature": 0.1}
+    supervisor = ChatOpenAI(
+        model=sup_cfg["model"], temperature=sup_cfg.get("temperature", 0.1))
+    synthesizer = supervisor  # reuse for now
+    return {"workers": workers, "supervisor": supervisor, "synthesizer": synthesizer}
+
+
+async def review_chunk_for_file(
+    *,
+    llms: Dict[str, ChatOpenAI],
+    file_path: str,
+    language: str,
+    chunk_index: int,
+    total_chunks: int,
+    code_chunk: str
+):
+    # Prepare numbered code
+    start_line = (chunk_index - 1) * DEFAULT_CHUNK_SIZE + 1
+    numbered = add_line_numbers_preserve(code_chunk, start_line=start_line)
+
+    # Run workers
+    tasks = [
+        run_worker_agent(
+            llm=w,
+            language=language,
+            file_path=file_path,
+            chunk_index=chunk_index,
+            total_chunks=total_chunks,
+            code_with_line_numbers=numbered,
+        )
+        for w in llms["workers"]
+    ]
+    worker_jsons = await asyncio.gather(*tasks)
+
+    # Supervisor decision
+    reviews_for_sup = format_reviews_for_supervisor(worker_jsons)
+    sup_json = await run_supervisor_agent(llms["supervisor"], reviews_text_block=reviews_for_sup)
+
+    # Compose a JSON summary to feed to the file-level synthesizer later
+    summary = {
+        "file": file_path,
+        "chunk_index": chunk_index,
+        "total_chunks": total_chunks,
+        "winner_index": sup_json.get("winner_index"),
+        "scores": sup_json.get("scores", []),
+        "merged_takeaways": sup_json.get("merged_takeaways", []),
+        "winning_review_text": sup_json.get("winning_review_text", ""),
+    }
+    return summary, worker_jsons, sup_json
+
+
+async def review_single_file(
+    *,
+    llms: Dict[str, ChatOpenAI],
+    file_path: str,
+    save_dir: str,
+    chunk_size: int = DEFAULT_CHUNK_SIZE,
+    max_lines_before_chunk: int = DEFAULT_MAX_LINES
+):
+    # Read file
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            code = f.read()
+    except Exception as e:
+        console.print(f"[red]Error reading {file_path}: {e}[/red]")
+        return
+
+    language = detect_language_from_extension(os.path.splitext(file_path)[1])
+    lines = code.splitlines()
+    if len(lines) > max_lines_before_chunk:
+        chunks = chunk_code_by_lines(code, max_lines=chunk_size)
+    else:
+        chunks = [(1, code)]
+
+    total_chunks = len(chunks)
+    summaries = []
+    all_workers_json = []
+    all_sup_json = []
+
+    # Progress per file
+    with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}")) as progress:
+        task = progress.add_task(f"Reviewing {os.path.basename(file_path)} ({
+                                 total_chunks} chunk{'s' if total_chunks > 1 else ''})", total=total_chunks)
+        for idx, (_start, chunk_text) in enumerate(chunks, start=1):
+            summary, worker_jsons, sup_json = await review_chunk_for_file(
+                llms=llms,
+                file_path=file_path,
+                language=language,
+                chunk_index=idx,
+                total_chunks=total_chunks,
+                code_chunk=chunk_text
+            )
+            summaries.append(summary)
+            all_workers_json.append(worker_jsons)
+            all_sup_json.append(sup_json)
+            progress.update(task, advance=1)
+
+    # Synthesize final Markdown across chunks
+    chunk_summaries_jsonl = "\n".join(
+        [json.dumps(s, ensure_ascii=False) for s in summaries])
+    final_markdown = await run_synthesizer_agent(llms["synthesizer"], chunk_summaries_jsonl=chunk_summaries_jsonl)
+
+    # Persist outputs
+    ensure_dir(save_dir)
+    base = safe_filename_from_path(os.path.relpath(file_path))
+    run_id = content_hash(file_path, "".join(lines))
+
+    json_path = os.path.join(save_dir, f"{base}.{run_id}.reviews.json")
+    md_path = os.path.join(save_dir, f"{base}.{run_id}.review.md")
+
+    payload = {
+        "file": file_path,
+        "language": language,
+        "chunks": summaries,
+        "workers_raw": all_workers_json,
+        "supervisor_raw": all_sup_json,
+        "final_markdown_path": md_path,
+    }
+    save_json(json_path, payload)
+    save_text(md_path, final_markdown)
+
+    console.print(f"\n[bold green]✓ Saved[/bold green] JSON: {json_path}")
+    console.print(f"[bold green]✓ Saved[/bold green] Markdown: {md_path}\n")
+
+
+def preflight_estimate(
+    *,
+    llms: Dict[str, ChatOpenAI],
+    files: List[str],
+    chunk_size: int,
+    chunk_threshold: int,
+    assume_worker_out: int,
+    assume_supervisor_out: int,
+    assume_synthesizer_out: int,
+) -> Dict[str, int]:
+    """
+    Build prompts (without API calls), estimate tokens before running.
+    Returns a dict of totals.
+    """
+    total_workers_calls = 0
+    total_supervisor_calls = 0
+    total_synthesizer_calls = 0
+    total_in = total_out = 0
+
+    worker_models = [get_model_name(w) for w in llms["workers"]]
+    supervisor_model = get_model_name(llms["supervisor"])
+    synthesizer_model = get_model_name(llms["synthesizer"])
+
+    for fp in files:
+        # Read code and chunk like the real run
+        try:
+            with open(fp, "r", encoding="utf-8") as f:
+                code = f.read()
+        except Exception:
+            continue
+        language = detect_language_from_extension(os.path.splitext(fp)[1])
+        lines = code.splitlines()
+        chunks = chunk_code_by_lines(code, max_lines=chunk_size) if len(
+            lines) > chunk_threshold else [(1, code)]
+        total_chunks = len(chunks)
+
+        # Workers & supervisor per chunk
+        for idx, (start, chunk_text) in enumerate(chunks, start=1):
+            numbered = add_line_numbers_preserve(chunk_text, start_line=start)
+            # Workers
+            for wm in worker_models:
+                prompt_text = render_worker_prompt_text(
+                    language=language, file_path=fp, chunk_index=idx, total_chunks=total_chunks,
+                    code_with_line_numbers=numbered
+                )
+                total_in += count_tokens_text(wm, prompt_text)
+                total_out += assume_worker_out
+                total_workers_calls += 1
+            # Supervisor (input includes reviews JSON from workers; approximate by sum of worker outs)
+            sup_static = count_tokens_text(
+                supervisor_model, render_supervisor_prompt_text(reviews_text_block=""))
+            sup_in = sup_static + \
+                sum([assume_worker_out for _ in worker_models])
+            total_in += sup_in
+            total_out += assume_supervisor_out
+            total_supervisor_calls += 1
+
+        # Synthesizer per file (input includes one JSON line per chunk; estimate per-chunk size ~ small)
+        synth_static = count_tokens_text(
+            synthesizer_model, render_synthesizer_prompt_text(chunk_summaries_jsonl=""))
+        # conservative per-chunk summary JSONL size
+        synth_in = synth_static + total_chunks * 150
+        total_in += synth_in
+        total_out += assume_synthesizer_out
+        total_synthesizer_calls += 1
+
+    return dict(
+        worker_calls=total_workers_calls,
+        supervisor_calls=total_supervisor_calls,
+        synthesizer_calls=total_synthesizer_calls,
+        tokens_in=total_in,
+        tokens_out=total_out,
+        tokens_total=total_in + total_out,
+    )
+
+
+async def main():
+    parser = argparse.ArgumentParser(
+        description="AI Multi-Agent Code Review Tool (Improved)")
+    parser.add_argument("directory", type=str, help="Root directory to review")
+    parser.add_argument("--extensions", nargs="+",
+                        default=[".cpp", ".hpp", ".h", ".py"], help="File extensions to include")
+    parser.add_argument("--save-dir", type=str,
+                        default="reviews", help="Directory to save results")
+    parser.add_argument("--models", type=str, default="models.yaml",
+                        help="Optional models config file")
+    parser.add_argument("--chunk-size", type=int,
+                        default=DEFAULT_CHUNK_SIZE, help="Max lines per chunk")
+    parser.add_argument("--chunk-threshold", type=int, default=DEFAULT_MAX_LINES,
+                        help="If file exceeds this many lines, chunk it")
+    parser.add_argument("--assume-worker-out", type=int, default=900,
+                        help="Assumed max output tokens per worker review")
+    parser.add_argument("--assume-supervisor-out", type=int, default=400,
+                        help="Assumed max output tokens per supervisor decision")
+    parser.add_argument("--assume-synthesizer-out", type=int, default=700,
+                        help="Assumed max output tokens per synthesizer result")
+    parser.add_argument("--skip-preflight", action="store_true",
+                        help="Run without token preflight/approval")
+
+    args = parser.parse_args()
+
+    console.print(
+        "[bold cyan]🤖 Initializing Improved Argus...[/bold cyan]")
+
+    # Env: load project .env (nearest), then Home-level fallbacks (do not override existing)
+    load_dotenv(find_dotenv(usecwd=True))
+    for p in [Path.home()/".argus.env", Path.home()/".env", Path.home()/".config/argus/env"]:
+        if p.exists():
+            load_dotenv(dotenv_path=p, override=False)
+    if not os.getenv("OPENAI_API_KEY"):
+        console.print(
+            "[red]Error: OPENAI_API_KEY not found. Set it in your .env.[/red]")
+        return
+
+    # LLMs
+    models_cfg = load_models_config(args.models)
+    llms = build_llms(models_cfg)
+
+    # Files to review
+    files = list_source_files(args.directory, args.extensions)
+    if not files:
+        console.print(f"[yellow]No files with {args.extensions} under '{
+                      args.directory}'.[/yellow]")
+        return
+
+    # ----- Preflight estimation & approval -----
+    if not args.skip_preflight:
+        est = preflight_estimate(
+            llms=llms,
+            files=files,
+            chunk_size=args.chunk_size,
+            chunk_threshold=args.chunk_threshold,
+            assume_worker_out=args.assume_worker_out,
+            assume_supervisor_out=args.assume_supervisor_out,
+            assume_synthesizer_out=args.assume_synthesizer_out,
+        )
+        table = Table(title="Token Preflight (approx.)")
+        table.add_column("Stage")
+        table.add_column("Calls", justify="right")
+        table.add_column("Input toks", justify="right")
+        table.add_column("Output toks", justify="right")
+        table.add_row("Workers", str(
+            est["worker_calls"]), "-", str(args.assume_worker_out * est["worker_calls"]))
+        table.add_row("Supervisor", str(
+            est["supervisor_calls"]), "-", str(args.assume_supervisor_out * est["supervisor_calls"]))
+        table.add_row("Synthesizer", str(est["synthesizer_calls"]), "-", str(
+            args.assume_synthesizer_out * est["synthesizer_calls"]))
+        table.add_row("—", "—", "—", "—")
+        table.add_row("Totals", "", str(
+            est["tokens_in"]), str(est["tokens_out"]))
+        console.print(table)
+        console.print(
+            "[dim]Note: counts approximate; small chat overhead not included. Adjust --assume-* flags if needed.[/dim]")
+
+        # Ask for approval
+        console.print("\n[bold]Proceed with API calls?[/bold] [y/N]: ", end="")
+        try:
+            answer = input().strip().lower()
+        except EOFError:
+            answer = "n"
+        if answer not in ("y", "yes"):
+            console.print(
+                "[yellow]Aborted by user before any API calls.[/yellow]")
+            return
+
+    console.print(f"Found {len(files)} file(s).")
+
+    for fp in files:
+        await review_single_file(
+            llms=llms,
+            file_path=fp,
+            save_dir=args.save_dir,
+            chunk_size=args.chunk_size,
+            max_lines_before_chunk=args.chunk_threshold
+        )
+
+if __name__ == "__main__":
+    asyncio.run(main())

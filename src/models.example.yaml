@@ -1,0 +1,10 @@
+# models.example.yaml
+workers:
+  - model: gpt-4o
+    temperature: 0.3
+  - model: gpt-4o-mini
+    temperature: 0.7
+supervisor:
+  model: gpt-4o
+  temperature: 0.1
+
