@@ -260,7 +260,7 @@ async def main():
         description="AI Multi-Agent Code Review Tool (Improved)")
     parser.add_argument("directory", type=str, help="Root directory to review")
     parser.add_argument("--extensions", nargs="+",
-                        default=[".cpp", ".hpp", ".h", ".py"], help="File extensions to include")
+                        default=[".cpp", ".hpp", ".h", ".cxx", ".hxx", ".cc", ".c++", ".h++", ".py"], help="File extensions to include")
     parser.add_argument("--save-dir", type=str,
                         default="reviews", help="Directory to save results")
     parser.add_argument("--models", type=str, default="models.yaml",

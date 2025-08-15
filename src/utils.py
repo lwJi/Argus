@@ -42,7 +42,7 @@ def chunk_code_by_lines(original_code: str, max_lines: int = 400) -> List[Tuple[
 
 def detect_language_from_extension(ext: str) -> str:
     ext = ext.lower()
-    if ext in [".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx", ".h"]:
+    if ext in [".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx", ".h", ".c++", ".h++", ".C", ".CPP", ".tpp", ".ipp"]:
         return "cpp"
     if ext in [".py"]:
         return "python"
