@@ -81,10 +81,10 @@ async def review_chunk_for_file(
     language: str,
     chunk_index: int,
     total_chunks: int,
-    code_chunk: str
+    code_chunk: str,
+    start_line: int,
 ):
-    # Prepare numbered code
-    start_line = (chunk_index - 1) * DEFAULT_CHUNK_SIZE + 1
+    # Prepare numbered code using the actual chunk start line
     numbered = add_line_numbers_preserve(code_chunk, start_line=start_line)
 
     # Run workers
@@ -218,7 +218,8 @@ async def review_single_file(
                 language=language,
                 chunk_index=idx,
                 total_chunks=total_chunks,
-                code_chunk=chunk_text
+                code_chunk=chunk_text,
+                start_line=_start,
             )
             summaries.append(summary)
             all_workers_json.append(worker_jsons)
