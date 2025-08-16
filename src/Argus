@@ -27,6 +27,18 @@ from agents import (
 
 console = Console()
 
+# --- Non-blocking console input for async contexts ---
+async def _async_input(prompt: str = "") -> str:
+    """
+    Read from stdin without blocking the event loop by offloading to a thread.
+    Returns empty string on EOF.
+    """
+    loop = asyncio.get_running_loop()
+    def _read():
+        try: return input(prompt)
+        except EOFError: return ""
+    return await loop.run_in_executor(None, _read)
+
 DEFAULT_MAX_LINES = 500  # chunking threshold
 DEFAULT_CHUNK_SIZE = 400
 
@@ -340,10 +352,7 @@ async def main():
 
         # Ask for approval
         console.print("\n[bold]Proceed with API calls?[/bold] [y/N]: ", end="")
-        try:
-            answer = input().strip().lower()
-        except EOFError:
-            answer = "n"
+        answer = (await _async_input()).strip().lower()
         if answer not in ("y", "yes"):
             console.print(
                 "[yellow]Aborted by user before any API calls.[/yellow]")
