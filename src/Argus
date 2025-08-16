@@ -135,8 +135,12 @@ async def review_single_file(
 
     # Progress per file
     with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}")) as progress:
-        task = progress.add_task(f"Reviewing {os.path.basename(file_path)} ({
-                                 total_chunks} chunk{'s' if total_chunks > 1 else ''})", total=total_chunks)
+        # Build the description without splitting f-string expressions across lines
+        desc = (
+            f"Reviewing {os.path.basename(file_path)} "
+            f"({total_chunks} chunk{'s' if total_chunks > 1 else ''})"
+        )
+        task = progress.add_task(desc, total=total_chunks)
         for idx, (_start, chunk_text) in enumerate(chunks, start=1):
             summary, worker_jsons, sup_json = await review_chunk_for_file(
                 llms=llms,
@@ -300,8 +304,9 @@ async def main():
     # Files to review
     files = list_source_files(args.directory, args.extensions)
     if not files:
-        console.print(f"[yellow]No files with {args.extensions} under '{
-                      args.directory}'.[/yellow]")
+        console.print(
+            f"[yellow]No files with {args.extensions} under '{args.directory}'.[/yellow]"
+        )
         return
 
     # ----- Preflight estimation & approval -----
