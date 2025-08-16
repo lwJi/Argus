@@ -3,6 +3,7 @@ import json
 from typing import List, Dict, Any, Optional
 from tenacity import AsyncRetrying, stop_after_attempt, wait_exponential_jitter
 from langchain_core.output_parsers import StrOutputParser
+from langchain.prompts import PromptTemplate
 from langchain_openai import ChatOpenAI
 
 from prompts import (
@@ -15,6 +16,26 @@ from prompts import (
     JSON_SUPERVISOR_SCHEMA,
 )
 from utils import extract_json_from_text
+
+# A minimal, strict JSON repair prompt used when a model wraps JSON in prose or emits invalid JSON.
+REPAIR_JSON_PROMPT = PromptTemplate(
+    input_variables=["malformed", "json_schema"],
+    template="""
+You are a strict JSON normalizer. Given a possibly malformed model output,
+produce ONE valid JSON object that conforms to the schema below.
+
+{json_schema}
+
+Rules:
+- Output ONLY the JSON object (no code fences, no prose, no extra text).
+- Preserve content faithfully; if a required key is missing, include it with a sensible empty value.
+- Do not invent findings beyond what is present.
+
+--- MALFORMED START ---
+{malformed}
+--- MALFORMED END ---
+""".strip()
+)
 
 
 async def _ainvoke_with_retry(chain, inputs: dict, attempts: int = 4) -> str:
@@ -96,33 +117,13 @@ async def run_worker_agent(
     try:
         return json.loads(json_text)
     except Exception:
-        # Last-ditch: ask model to output only JSON (repair step)
-        repair_chain = (worker_prompt | llm | StrOutputParser())
+        # Proper repair: feed the malformed output to a strict JSON normalizer that emits JSON only.
+        repair_chain = (REPAIR_JSON_PROMPT | llm | StrOutputParser())
         repaired = await _ainvoke_with_retry(
             repair_chain,
-            {
-                **(
-                    {
-                        "language": language,
-                        "file_path": file_path,
-                        "chunk_index": chunk_index,
-                        "total_chunks": total_chunks,
-                        "code_with_line_numbers": code_with_line_numbers,
-                        "json_schema": JSON_WORKER_SCHEMA,
-                    }
-                    if worker_prompt is WORKER_PROMPT_GENERIC
-                    else {
-                        "file_path": file_path,
-                        "chunk_index": chunk_index,
-                        "total_chunks": total_chunks,
-                        "code_with_line_numbers": code_with_line_numbers,
-                        "json_schema": JSON_WORKER_SCHEMA,
-                    }
-                ),
-            },
+            {"malformed": rendered, "json_schema": JSON_WORKER_SCHEMA},
         )
-        repaired_json = extract_json_from_text(repaired)
-        return json.loads(repaired_json)
+        return json.loads(extract_json_from_text(repaired))
 
 
 async def run_supervisor_agent(
@@ -142,12 +143,13 @@ async def run_supervisor_agent(
     try:
         return json.loads(json_text)
     except Exception:
-        # Small repair by asking again (rare)
-        rendered2 = await _ainvoke_with_retry(
-            chain,
-            {"reviews": reviews_text_block, "json_schema": JSON_SUPERVISOR_SCHEMA}
+        # Proper repair: normalize to strict JSON using the malformed output.
+        repair_chain = (REPAIR_JSON_PROMPT | llm | StrOutputParser())
+        repaired = await _ainvoke_with_retry(
+            repair_chain,
+            {"malformed": rendered, "json_schema": JSON_SUPERVISOR_SCHEMA},
         )
-        return json.loads(extract_json_from_text(rendered2))
+        return json.loads(extract_json_from_text(repaired))
 
 
 async def run_synthesizer_agent(
