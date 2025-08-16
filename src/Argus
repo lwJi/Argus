@@ -22,7 +22,8 @@ from utils import (
 )
 from agents import (
     run_worker_agent, run_supervisor_agent, run_synthesizer_agent, format_reviews_for_supervisor,
-    render_worker_prompt_text, render_supervisor_prompt_text, render_synthesizer_prompt_text
+    render_worker_prompt_text, render_supervisor_prompt_text, render_synthesizer_prompt_text,
+    format_reviews_for_supervisor_compact
 )
 
 console = Console()
@@ -141,7 +142,24 @@ async def review_chunk_for_file(
         return summary, [], sup_json
 
     # Supervisor decision
-    reviews_for_sup = format_reviews_for_supervisor(worker_jsons)
+    # Prefer compact, token-friendly formatting
+    reviews_for_sup = format_reviews_for_supervisor_compact(worker_jsons, max_field_chars=800)
+
+    # Light token-budget guard: if the full supervisor prompt looks too large, clip harder
+    try:
+        sup_model = get_model_name(llms["supervisor"])
+        prompt_for_count = render_supervisor_prompt_text(reviews_text_block=reviews_for_sup)
+        toks = count_tokens_text(sup_model, prompt_for_count)
+        # Heuristic threshold—kept conservative to avoid hitting context limits after adding model overhead
+        if toks > 6000:
+            console.print(
+                f"[yellow]⚠ Supervisor input ~{toks} tokens; clipping long fields further for {os.path.basename(file_path)} "
+                f"(chunk {chunk_index}/{total_chunks}).[/yellow]"
+            )
+            reviews_for_sup = format_reviews_for_supervisor_compact(worker_jsons, max_field_chars=300)
+    except Exception:
+        # Counting is best-effort only; continue even if tiktoken not available
+        pass
     sup_json = await run_supervisor_agent(llms["supervisor"], reviews_text_block=reviews_for_sup)
 
     # Compose a JSON summary to feed to the file-level synthesizer later

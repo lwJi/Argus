@@ -1,6 +1,7 @@
 # agents.py
 import json
 from typing import List, Dict, Any, Optional
+import copy
 from tenacity import AsyncRetrying, stop_after_attempt, wait_exponential_jitter
 from langchain_core.output_parsers import StrOutputParser
 from langchain.prompts import PromptTemplate
@@ -163,6 +164,47 @@ async def run_synthesizer_agent(
     chain = SYNTHESIZER_PROMPT | llm | StrOutputParser()
     md = await _ainvoke_with_retry(chain, {"chunk_summaries": chunk_summaries_jsonl})
     return md
+
+def _clip_str(s: Any, n: int) -> Any:
+    if not isinstance(s, str):
+        return s
+    return s if len(s) <= n else (s[:n] + "…")
+
+def _compact_review_for_supervisor(review: dict, max_field_chars: int = 800) -> dict:
+    """
+    Return a deep-copied review with long string fields clipped to reduce tokens.
+    Preserves structure and keys so supervisor can still compare fairly.
+    """
+    out = json.loads(json.dumps(review))  # cheap deep copy that drops non-serializable bits
+    # Top-level
+    if "summary" in out:
+        out["summary"] = _clip_str(out["summary"], max_field_chars)
+    # Findings
+    if isinstance(out.get("findings"), list):
+        for f in out["findings"]:
+            if isinstance(f, dict):
+                for k in ("title", "snippet", "explanation", "suggestion", "diff"):
+                    if k in f:
+                        f[k] = _clip_str(f[k], max_field_chars)
+    return out
+
+def format_reviews_for_supervisor_compact(
+    worker_jsons: List[dict],
+    *,
+    max_field_chars: int = 800,
+    header_prefix: str = "#R"
+) -> str:
+    """
+    Compact, delimiter-light formatter for supervisor input:
+    - Minifies JSON (no pretty indent) to reduce tokens
+    - Clips verbose fields (snippet/diff/etc.) to keep size bounded
+    - Adds tiny headers (#R1, #R2, …) for separation
+    """
+    blocks = []
+    for i, j in enumerate(worker_jsons, start=1):
+        compact = _compact_review_for_supervisor(j, max_field_chars=max_field_chars)
+        blocks.append(f"{header_prefix}{i}\n" + json.dumps(compact, ensure_ascii=False, separators=(",", ":")))
+    return "\n".join(blocks)
 
 
 def format_reviews_for_supervisor(worker_jsons: List[dict]) -> str:
