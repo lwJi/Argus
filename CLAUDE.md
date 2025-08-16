@@ -71,3 +71,4 @@ Copy `src/models.example.yaml` to `src/models.yaml` and configure your model set
 - `utils.py:91-105` - Extract JSON from LLM responses with fallback parsing
 - `utils.py:128-134` - Token counting for cost estimation and chunking decisions
 - `utils.py:82-88` - Source file discovery with extension filtering
+- src/Argus is the main CLI interface
