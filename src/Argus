@@ -98,7 +98,47 @@ async def review_chunk_for_file(
         )
         for w in llms["workers"]
     ]
-    worker_jsons = await asyncio.gather(*tasks)
+    # Be resilient: don't cancel all on first failure
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    worker_jsons = []
+    failed = []
+    for i, r in enumerate(results, start=1):
+        if isinstance(r, Exception):
+            failed.append((i, r))
+        else:
+            worker_jsons.append(r)
+
+    # Log any worker failures but continue if we have at least one success
+    if failed:
+        for idx, err in failed:
+            console.print(
+                f"[yellow]⚠ Worker {idx} failed for "
+                f"{os.path.basename(file_path)} (chunk {chunk_index}/{total_chunks}): {err}[/yellow]"
+            )
+
+    # If all workers failed, skip supervisor; return a minimal summary so the pipeline stays alive
+    if not worker_jsons:
+        console.print(
+            f"[red]All worker agents failed for {os.path.basename(file_path)} "
+            f"(chunk {chunk_index}/{total_chunks}). Skipping supervisor.[/red]"
+        )
+        sup_json = {
+            "analysis": "All worker agents failed",
+            "scores": [],
+            "winner_index": None,
+            "merged_takeaways": [],
+            "winning_review_text": ""
+        }
+        summary = {
+            "file": file_path,
+            "chunk_index": chunk_index,
+            "total_chunks": total_chunks,
+            "winner_index": None,
+            "scores": [],
+            "merged_takeaways": [],
+            "winning_review_text": ""
+        }
+        return summary, [], sup_json
 
     # Supervisor decision
     reviews_for_sup = format_reviews_for_supervisor(worker_jsons)
