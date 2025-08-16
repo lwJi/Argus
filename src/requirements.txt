@@ -6,3 +6,5 @@ tenacity==8.2.3
 rich==13.7.1
 PyYAML==6.0.2
 tiktoken==0.7.0
+pytest==7.4.4
+pytest-asyncio==0.23.2
