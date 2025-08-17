@@ -42,7 +42,7 @@ def chunk_code_by_lines(original_code: str, max_lines: int = 400) -> List[Tuple[
 
 def detect_language_from_extension(ext: str) -> str:
     ext = ext.lower()
-    if ext in [".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx", ".h", ".c++", ".h++", ".C", ".CPP", ".tpp", ".ipp"]:
+    if ext in [".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx", ".h", ".c++", ".h++", ".c", ".tpp", ".ipp"]:
         return "cpp"
     if ext in [".py"]:
         return "python"
@@ -81,9 +81,12 @@ def load_models_config(path: str) -> dict:
 
 def list_source_files(root: str, extensions: List[str]) -> List[str]:
     out = []
+    # Normalize extensions to lowercase for comparison
+    extensions_lower = [ext.lower() for ext in extensions]
     for dirpath, _, filenames in os.walk(root):
         for fn in filenames:
-            if any(fn.endswith(ext) for ext in extensions):
+            fn_lower = fn.lower()
+            if any(fn_lower.endswith(ext) for ext in extensions_lower):
                 out.append(os.path.join(dirpath, fn))
     return sorted(out)
 
