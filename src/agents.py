@@ -420,10 +420,12 @@ class IterationController:
     """
     
     def __init__(self, max_iterations: int = 3, strategy: IterationStrategy = IterationStrategy.WORKER_POOL, 
-                 convergence_threshold: float = 0.8):
+                 convergence_threshold: float = 0.8, max_history_size: int = 10, retain_full_data: bool = False):
         self.max_iterations = max_iterations
         self.strategy = strategy
         self.convergence_threshold = convergence_threshold
+        self.max_history_size = max_history_size
+        self.retain_full_data = retain_full_data
         self.iteration_history: List[Dict[str, Any]] = []
         self.current_iteration = 0
         
@@ -437,10 +439,18 @@ class IterationController:
             
         # Check convergence based on review similarity
         if len(self.iteration_history) >= 2:
-            current_reviews = self.iteration_history[-1].get("worker_reviews", [])
-            previous_reviews = self.iteration_history[-2].get("worker_reviews", [])
+            current_iteration = self.iteration_history[-1]
+            previous_iteration = self.iteration_history[-2]
             
-            convergence_score = self._calculate_convergence(current_reviews, previous_reviews)
+            if self.retain_full_data:
+                # Use original convergence logic with full review data
+                current_reviews = current_iteration.get("worker_reviews", [])
+                previous_reviews = previous_iteration.get("worker_reviews", [])
+                convergence_score = self._calculate_convergence(current_reviews, previous_reviews)
+            else:
+                # Use compressed data for convergence analysis
+                convergence_score = self._calculate_convergence_compressed(current_iteration, previous_iteration)
+                
             return convergence_score < self.convergence_threshold
             
         return True
@@ -448,15 +458,24 @@ class IterationController:
     def record_iteration(self, worker_reviews: List[Dict], supervisor_result: Dict, 
                         metadata: Dict[str, Any] = None) -> None:
         """Record the results of an iteration for convergence analysis and history tracking."""
-        iteration_data = {
-            "iteration": self.current_iteration + 1,
-            "worker_reviews": copy.deepcopy(worker_reviews),
-            "supervisor_result": copy.deepcopy(supervisor_result),
-            "metadata": metadata or {},
-            "timestamp": self._get_timestamp()
-        }
+        if self.retain_full_data:
+            # Legacy behavior for debugging/analysis mode
+            iteration_data = {
+                "iteration": self.current_iteration + 1,
+                "worker_reviews": copy.deepcopy(worker_reviews),
+                "supervisor_result": copy.deepcopy(supervisor_result),
+                "metadata": metadata or {},
+                "timestamp": self._get_timestamp()
+            }
+        else:
+            # Use compressed data to prevent memory leaks
+            iteration_data = self._compress_iteration_data(worker_reviews, supervisor_result, metadata)
+            
         self.iteration_history.append(iteration_data)
         self.current_iteration += 1
+        
+        # Enforce sliding window to prevent unbounded growth
+        self._cleanup_old_iterations()
         
     def get_context_for_iteration(self, iteration_num: int) -> Dict[str, Any]:
         """Get context data for the specified iteration based on strategy."""
@@ -470,13 +489,20 @@ class IterationController:
         if self.strategy == IterationStrategy.FEEDBACK_DRIVEN and self.iteration_history:
             # Include supervisor feedback from previous iteration
             last_iteration = self.iteration_history[-1]
-            context["supervisor_feedback"] = last_iteration["supervisor_result"].get("feedback_for_next_iteration", "")
+            if self.retain_full_data:
+                context["supervisor_feedback"] = last_iteration["supervisor_result"].get("feedback_for_next_iteration", "")
+            else:
+                context["supervisor_feedback"] = last_iteration.get("feedback_summary", "")
             
         elif self.strategy == IterationStrategy.CONSENSUS and self.iteration_history:
             # Include anonymized peer reviews from previous iteration
             last_iteration = self.iteration_history[-1]
-            anonymized_reviews = self._anonymize_reviews(last_iteration["worker_reviews"])
-            context["peer_reviews_previous"] = anonymized_reviews
+            if self.retain_full_data:
+                anonymized_reviews = self._anonymize_reviews(last_iteration["worker_reviews"])
+                context["peer_reviews_previous"] = anonymized_reviews
+            else:
+                # For compressed data, provide summary instead of full reviews
+                context["peer_reviews_previous"] = [{"summary": "Compressed review data available"}]
             
         # Always include summary of previous iterations for context
         for hist in self.iteration_history:
@@ -509,6 +535,34 @@ class IterationController:
         previous_summary = self._extract_review_summary(previous)
         
         # Compare key metrics
+        metrics = ["total_findings", "critical_count", "high_count", "bug_count", "performance_count"]
+        similarities = []
+        
+        for metric in metrics:
+            curr_val = current_summary.get(metric, 0)
+            prev_val = previous_summary.get(metric, 0)
+            
+            if curr_val == prev_val == 0:
+                similarities.append(1.0)
+            elif curr_val == 0 or prev_val == 0:
+                similarities.append(0.0)
+            else:
+                # Normalize difference
+                similarity = 1.0 - abs(curr_val - prev_val) / max(curr_val, prev_val)
+                similarities.append(similarity)
+                
+        return sum(similarities) / len(similarities) if similarities else 0.0
+    
+    def _calculate_convergence_compressed(self, current_iteration: Dict[str, Any], 
+                                        previous_iteration: Dict[str, Any]) -> float:
+        """Calculate convergence score using compressed iteration data."""
+        current_summary = current_iteration.get("review_summary", {})
+        previous_summary = previous_iteration.get("review_summary", {})
+        
+        if not current_summary or not previous_summary:
+            return 0.0
+            
+        # Compare key metrics from compressed summaries
         metrics = ["total_findings", "critical_count", "high_count", "bug_count", "performance_count"]
         similarities = []
         
@@ -570,22 +624,39 @@ class IterationController:
         
     def _summarize_iteration(self, iteration_data: Dict) -> str:
         """Create a brief summary of an iteration for context."""
-        worker_count = len(iteration_data.get("worker_reviews", []))
-        supervisor = iteration_data.get("supervisor_result", {})
-        winner_idx = supervisor.get("winner_index")
+        if "worker_reviews" in iteration_data:
+            # Full data format
+            worker_count = len(iteration_data.get("worker_reviews", []))
+            supervisor = iteration_data.get("supervisor_result", {})
+            winner_idx = supervisor.get("winner_index")
+        else:
+            # Compressed data format
+            supervisor_summary = iteration_data.get("supervisor_summary", {})
+            worker_count = supervisor_summary.get("scores_count", 0)
+            winner_idx = supervisor_summary.get("winner_index")
         
         return f"Iteration {iteration_data['iteration']}: {worker_count} workers, winner={winner_idx}"
         
     def _get_convergence_indicators(self, iteration_data: Dict) -> Dict[str, Any]:
         """Extract convergence indicators from iteration data."""
-        reviews = iteration_data.get("worker_reviews", [])
-        summary = self._extract_review_summary(reviews)
-        
-        return {
-            "finding_count": summary["total_findings"],
-            "critical_issues": summary["critical_count"],
-            "consensus_strength": len(reviews)  # Simple metric for now
-        }
+        if "worker_reviews" in iteration_data:
+            # Full data format
+            reviews = iteration_data.get("worker_reviews", [])
+            summary = self._extract_review_summary(reviews)
+            return {
+                "finding_count": summary["total_findings"],
+                "critical_issues": summary["critical_count"],
+                "consensus_strength": len(reviews)
+            }
+        else:
+            # Compressed data format
+            review_summary = iteration_data.get("review_summary", {})
+            supervisor_summary = iteration_data.get("supervisor_summary", {})
+            return {
+                "finding_count": review_summary.get("total_findings", 0),
+                "critical_issues": review_summary.get("critical_count", 0),
+                "consensus_strength": supervisor_summary.get("scores_count", 0)
+            }
         
     def _analyze_improvement_trajectory(self) -> Dict[str, Any]:
         """Analyze how reviews improved across iterations."""
@@ -599,22 +670,32 @@ class IterationController:
         }
         
         for iteration in self.iteration_history:
-            reviews = iteration.get("worker_reviews", [])
-            summary = self._extract_review_summary(reviews)
-            
-            trajectories["finding_counts"].append(summary["total_findings"])
-            trajectories["critical_counts"].append(summary["critical_count"])
-            
-            # Quality score based on supervisor analysis
-            supervisor = iteration.get("supervisor_result", {})
-            scores = supervisor.get("scores", [])
-            if scores:
-                avg_score = sum(s.get("accuracy", 0) + s.get("completeness", 0) + 
-                                s.get("clarity", 0) + s.get("insightfulness", 0) 
-                                for s in scores) / (len(scores) * 4)
-                trajectories["quality_scores"].append(avg_score)
+            if "worker_reviews" in iteration:
+                # Full data format
+                reviews = iteration.get("worker_reviews", [])
+                summary = self._extract_review_summary(reviews)
+                
+                trajectories["finding_counts"].append(summary["total_findings"])
+                trajectories["critical_counts"].append(summary["critical_count"])
+                
+                # Quality score based on supervisor analysis
+                supervisor = iteration.get("supervisor_result", {})
+                scores = supervisor.get("scores", [])
+                if scores:
+                    avg_score = sum(s.get("accuracy", 0) + s.get("completeness", 0) + 
+                                    s.get("clarity", 0) + s.get("insightfulness", 0) 
+                                    for s in scores) / (len(scores) * 4)
+                    trajectories["quality_scores"].append(avg_score)
+                else:
+                    trajectories["quality_scores"].append(0.0)
             else:
-                trajectories["quality_scores"].append(0.0)
+                # Compressed data format
+                review_summary = iteration.get("review_summary", {})
+                supervisor_summary = iteration.get("supervisor_summary", {})
+                
+                trajectories["finding_counts"].append(review_summary.get("total_findings", 0))
+                trajectories["critical_counts"].append(review_summary.get("critical_count", 0))
+                trajectories["quality_scores"].append(supervisor_summary.get("avg_quality", 0.0))
                 
         return {
             "trend": self._determine_trend(trajectories["quality_scores"]),
@@ -643,27 +724,89 @@ class IterationController:
         best_score = 0.0
         
         for i, iteration in enumerate(self.iteration_history, 1):
-            supervisor = iteration.get("supervisor_result", {})
-            scores = supervisor.get("scores", [])
-            
-            if scores:
-                # Calculate average quality score
-                total_score = sum(
-                    s.get("accuracy", 0) + s.get("completeness", 0) + 
-                    s.get("clarity", 0) + s.get("insightfulness", 0) 
-                    for s in scores
-                )
-                avg_score = total_score / (len(scores) * 4) if scores else 0.0
+            if "supervisor_result" in iteration:
+                # Full data format
+                supervisor = iteration.get("supervisor_result", {})
+                scores = supervisor.get("scores", [])
                 
-                if avg_score > best_score:
-                    best_score = avg_score
-                    best_iteration = i
+                if scores:
+                    # Calculate average quality score
+                    total_score = sum(
+                        s.get("accuracy", 0) + s.get("completeness", 0) + 
+                        s.get("clarity", 0) + s.get("insightfulness", 0) 
+                        for s in scores
+                    )
+                    avg_score = total_score / (len(scores) * 4) if scores else 0.0
+                else:
+                    avg_score = 0.0
+            else:
+                # Compressed data format
+                supervisor_summary = iteration.get("supervisor_summary", {})
+                avg_score = supervisor_summary.get("avg_quality", 0.0)
+                
+            if avg_score > best_score:
+                best_score = avg_score
+                best_iteration = i
                     
         return {
             "iteration": best_iteration,
             "score": best_score,
             "reason": "highest_quality_score"
         }
+        
+    def _compress_iteration_data(self, worker_reviews: List[Dict], supervisor_result: Dict, 
+                               metadata: Dict[str, Any] = None) -> Dict[str, Any]:
+        """
+        Create a compressed summary of iteration data to reduce memory usage.
+        Extracts only essential metrics needed for convergence analysis and final synthesis.
+        """
+        compressed = {
+            "iteration": self.current_iteration + 1,
+            "timestamp": self._get_timestamp(),
+            "metadata": metadata or {},
+        }
+        
+        # Extract essential review metrics
+        review_summary = self._extract_review_summary(worker_reviews)
+        compressed["review_summary"] = review_summary
+        
+        # Extract supervisor decision data
+        compressed["supervisor_summary"] = {
+            "winner_index": supervisor_result.get("winner_index"),
+            "convergence_indicators": supervisor_result.get("iteration_comparison", {}).get("convergence_indicators", ""),
+            "improvement_noted": bool(supervisor_result.get("iteration_comparison", {}).get("improvement_over_previous")),
+            "scores_count": len(supervisor_result.get("scores", [])),
+            "avg_quality": self._calculate_average_quality(supervisor_result.get("scores", []))
+        }
+        
+        # Keep essential context for strategies
+        if self.strategy == IterationStrategy.FEEDBACK_DRIVEN:
+            compressed["feedback_summary"] = supervisor_result.get("feedback_for_next_iteration", "")[:200]  # Truncate
+            
+        return compressed
+    
+    def _calculate_average_quality(self, scores: List[Dict[str, Any]]) -> float:
+        """Calculate average quality score from supervisor scores."""
+        if not scores:
+            return 0.0
+            
+        total_score = sum(
+            s.get("accuracy", 0) + s.get("completeness", 0) + 
+            s.get("clarity", 0) + s.get("insightfulness", 0) 
+            for s in scores
+        )
+        return total_score / (len(scores) * 4) if scores else 0.0
+    
+    def _cleanup_old_iterations(self) -> None:
+        """Remove old iterations beyond max_history_size to prevent memory leaks."""
+        if len(self.iteration_history) > self.max_history_size:
+            # Keep most recent iterations
+            excess = len(self.iteration_history) - self.max_history_size
+            self.iteration_history = self.iteration_history[excess:]
+    
+    def clear_history(self) -> None:
+        """Manually clear iteration history to free memory."""
+        self.iteration_history.clear()
         
     def _get_timestamp(self) -> str:
         """Get current timestamp for iteration tracking."""
