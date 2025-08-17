@@ -26,8 +26,10 @@ from agents import (
     run_worker_agent, run_supervisor_agent, run_synthesizer_agent, format_reviews_for_supervisor,
     render_worker_prompt_text, render_supervisor_prompt_text, render_synthesizer_prompt_text,
     format_reviews_for_supervisor_compact, IterationController, IterationStrategy,
-    run_iterative_worker_agent, run_iterative_supervisor_agent, _ainvoke_with_retry
+    run_iterative_worker_agent, run_iterative_supervisor_agent, _ainvoke_with_retry,
+    set_global_rate_limiter
 )
+from rate_limiting import APIRateLimiter, RateLimitMode
 
 console = Console()
 
@@ -503,7 +505,7 @@ Create a well-structured markdown report with clear sections and actionable insi
         template="{prompt_text}"
     ) | llm | StrOutputParser()
     
-    return await _ainvoke_with_retry(chain, {"prompt_text": prompt_text})
+    return await _ainvoke_with_retry(chain, {"prompt_text": prompt_text}, llm=llm)
 
 
 def analyze_iteration_results(summaries: List[Dict], all_workers_json: List, all_sup_json: List) -> Dict[str, Any]:
@@ -693,6 +695,19 @@ async def main():
                         help="Strategy for iterative improvement: worker_pool (different models), feedback_driven (supervisor feedback), or consensus (peer review sharing)")
     parser.add_argument("--convergence-threshold", type=float, default=0.8,
                         help="Convergence threshold for early stopping (0.0-1.0, default: 0.8)")
+    parser.add_argument("--retain-full-iteration-data", action="store_true",
+                        help="Retain full iteration data (increases memory usage, useful for debugging)")
+    
+    # Rate limiting arguments
+    parser.add_argument("--rate-limit-mode", choices=["conservative", "balanced", "aggressive", "custom"], 
+                        default="balanced",
+                        help="Rate limiting mode: conservative (safe defaults), balanced (optimal), aggressive (high throughput), or custom (use config file)")
+    parser.add_argument("--rate-limit-config", type=str,
+                        help="Path to custom rate limit configuration file (YAML)")
+    parser.add_argument("--max-concurrent", type=int,
+                        help="Maximum concurrent requests (overrides mode defaults)")
+    parser.add_argument("--disable-rate-limiting", action="store_true",
+                        help="Disable rate limiting (not recommended for production)")
 
     args = parser.parse_args()
 
@@ -717,6 +732,33 @@ async def main():
         console.print(
             "[red]Error: OPENAI_API_KEY not found. Set it in your .env.[/red]")
         return
+
+    # Initialize rate limiter
+    if not args.disable_rate_limiting:
+        try:
+            if args.rate_limit_mode == "custom" and args.rate_limit_config:
+                # Load custom rate limit configuration
+                import yaml
+                with open(args.rate_limit_config, "r") as f:
+                    custom_config = yaml.safe_load(f)
+                    from rate_limiting import RateLimitConfig
+                    # Convert dict to RateLimitConfig objects
+                    config_objects = {}
+                    for model_name, config_dict in custom_config.get("rate_limits", {}).items():
+                        config_objects[model_name] = RateLimitConfig(**config_dict)
+                    rate_limiter = APIRateLimiter(mode=RateLimitMode.CUSTOM, custom_config=config_objects)
+            else:
+                mode = RateLimitMode(args.rate_limit_mode)
+                rate_limiter = APIRateLimiter(mode=mode)
+            
+            set_global_rate_limiter(rate_limiter)
+            console.print(f"[dim]Rate limiting enabled: {args.rate_limit_mode} mode[/dim]")
+            
+        except Exception as e:
+            console.print(f"[yellow]Warning: Failed to initialize rate limiter: {e}[/yellow]")
+            console.print("[yellow]Continuing without rate limiting...[/yellow]")
+    else:
+        console.print("[dim]Rate limiting disabled[/dim]")
 
     # LLMs
     models_cfg = load_models_config(args.models)
@@ -770,6 +812,22 @@ async def main():
             note += f" Iterations multiply token usage approximately {args.iterations}x."
         note += "[/dim]"
         console.print(note)
+        
+        # Show rate limiting information
+        if not args.disable_rate_limiting:
+            from agents import get_global_rate_limiter
+            rate_limiter = get_global_rate_limiter()
+            if rate_limiter:
+                console.print("\n[bold cyan]Rate Limiting Status:[/bold cyan]")
+                status = rate_limiter.get_status()
+                for model_name, model_status in status.items():
+                    requests_limit = rate_limiter._get_model_config(model_name).requests_per_minute
+                    tokens_limit = rate_limiter._get_model_config(model_name).tokens_per_minute
+                    max_concurrent = rate_limiter._get_model_config(model_name).max_concurrent
+                    
+                    console.print(f"  [dim]{model_name}:[/dim] {requests_limit} RPM, {tokens_limit:,} TPM, {max_concurrent} concurrent")
+                    
+                console.print(f"[dim]Mode: {args.rate_limit_mode} | Circuit breakers active | Automatic backoff enabled[/dim]")
 
         # Ask for approval
         console.print("\n[bold]Proceed with API calls?[/bold] [y/N]: ", end="")
@@ -793,6 +851,36 @@ async def main():
             iteration_strategy=args.iteration_strategy,
             convergence_threshold=args.convergence_threshold
         )
+    
+    # Show final rate limiting statistics
+    if not args.disable_rate_limiting:
+        from agents import get_global_rate_limiter
+        rate_limiter = get_global_rate_limiter()
+        if rate_limiter:
+            console.print("\n[bold cyan]Rate Limiting Summary:[/bold cyan]")
+            stats = rate_limiter.get_stats()
+            
+            total_requests = sum(stat.total_requests for stat in stats.values())
+            total_successful = sum(stat.successful_requests for stat in stats.values())
+            total_rate_limited = sum(stat.rate_limited_requests for stat in stats.values())
+            
+            console.print(f"  Total API calls: {total_requests}")
+            console.print(f"  Successful: {total_successful}")
+            console.print(f"  Rate limited: {total_rate_limited}")
+            
+            if total_requests > 0:
+                success_rate = (total_successful / total_requests) * 100
+                console.print(f"  Success rate: {success_rate:.1f}%")
+                
+                if total_rate_limited > 0:
+                    console.print(f"[yellow]  {total_rate_limited} requests were rate limited and retried[/yellow]")
+            
+            # Show per-model statistics if multiple models used
+            if len(stats) > 1:
+                for model_name, stat in stats.items():
+                    if stat.total_requests > 0:
+                        avg_time = stat.average_response_time
+                        console.print(f"  [dim]{model_name}: {stat.successful_requests}/{stat.total_requests} calls, avg {avg_time:.1f}s[/dim]")
 
 if __name__ == "__main__":
     asyncio.run(main())

@@ -1,0 +1,45 @@
+# Example rate limiting configuration for Argus
+# Use with: python src/Argus <directory> --rate-limit-mode custom --rate-limit-config rate_limits.yaml
+
+rate_limits:
+  # GPT-4o configuration
+  gpt-4o:
+    requests_per_minute: 500
+    tokens_per_minute: 30000
+    max_concurrent: 10
+    burst_allowance: 1.2  # Allow 20% burst above sustained rate
+    circuit_breaker_threshold: 5  # Failures before circuit breaker trips
+    circuit_breaker_timeout: 60.0  # Seconds before trying again
+
+  # GPT-4o-mini configuration (higher throughput)
+  gpt-4o-mini:
+    requests_per_minute: 2000
+    tokens_per_minute: 200000
+    max_concurrent: 20
+    burst_allowance: 1.3
+    circuit_breaker_threshold: 3
+    circuit_breaker_timeout: 30.0
+
+  # Default for unknown models
+  default:
+    requests_per_minute: 100
+    tokens_per_minute: 10000
+    max_concurrent: 3
+    burst_allowance: 1.1
+    circuit_breaker_threshold: 5
+    circuit_breaker_timeout: 60.0
+
+# Notes:
+# - requests_per_minute: Maximum requests per minute to the API
+# - tokens_per_minute: Maximum tokens per minute (input + output)
+# - max_concurrent: Maximum simultaneous requests
+# - burst_allowance: Multiplier for short-term bursts above sustained rate
+# - circuit_breaker_threshold: Failed requests before circuit breaker opens
+# - circuit_breaker_timeout: Seconds to wait before trying again after circuit breaker opens
+#
+# Recommended settings by OpenAI tier:
+# Free tier: 3 RPM, 40K TPM
+# Pay-as-you-go: 3500 RPM, 90K TPM  
+# Pay-as-you-scale: 5000 RPM, 300K TPM (varies by model)
+#
+# Always check your actual limits at: https://platform.openai.com/account/limits

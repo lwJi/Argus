@@ -1,9 +1,10 @@
 # agents.py
 import json
+import asyncio
 from typing import List, Dict, Any, Optional, Tuple
 import copy
 from enum import Enum
-from tenacity import AsyncRetrying, stop_after_attempt, wait_exponential_jitter
+from tenacity import AsyncRetrying, stop_after_attempt, wait_exponential_jitter, retry_if_exception_type
 from langchain_core.output_parsers import StrOutputParser
 from langchain.prompts import PromptTemplate
 from langchain_openai import ChatOpenAI
@@ -23,7 +24,24 @@ from prompts import (
     JSON_FINAL_SYNTHESIS_SCHEMA,
     ITERATION_INSTRUCTIONS,
 )
-from utils import extract_json_from_text
+from utils import extract_json_from_text, count_tokens_text, get_model_name
+from rate_limiting import APIRateLimiter, RateLimitMode
+import logging
+import time
+
+logger = logging.getLogger(__name__)
+
+# Global rate limiter instance - will be initialized by main application
+_global_rate_limiter: Optional[APIRateLimiter] = None
+
+def set_global_rate_limiter(rate_limiter: APIRateLimiter):
+    """Set the global rate limiter for all agent operations."""
+    global _global_rate_limiter
+    _global_rate_limiter = rate_limiter
+
+def get_global_rate_limiter() -> Optional[APIRateLimiter]:
+    """Get the global rate limiter instance."""
+    return _global_rate_limiter
 
 # A minimal, strict JSON repair prompt used when a model wraps JSON in prose or emits invalid JSON.
 REPAIR_JSON_PROMPT = PromptTemplate(
@@ -46,14 +64,84 @@ Rules:
 )
 
 
-async def _ainvoke_with_retry(chain, inputs: dict, attempts: int = 4) -> str:
-    async for attempt in AsyncRetrying(
-        stop=stop_after_attempt(attempts),
-        wait=wait_exponential_jitter(initial=1, max=8)
-    ):
-        with attempt:
-            return await chain.ainvoke(inputs)
-    raise RuntimeError("Exhausted retries")
+async def _ainvoke_with_retry(chain, inputs: dict, attempts: int = 4, llm: Optional[ChatOpenAI] = None) -> str:
+    """Enhanced retry function with rate limiting and intelligent backoff."""
+    rate_limiter = get_global_rate_limiter()
+    start_time = time.time()
+    
+    # Estimate token count for rate limiting
+    estimated_tokens = 100  # Default conservative estimate
+    if inputs and rate_limiter:
+        # Try to estimate tokens from input text
+        try:
+            input_text = str(inputs.get('prompt_text', '') or inputs.get('language', '') or inputs.get('code_with_line_numbers', ''))
+            if input_text and llm:
+                model_name = get_model_name(llm)
+                estimated_tokens = count_tokens_text(model_name, input_text)
+                # Add buffer for response tokens
+                estimated_tokens = int(estimated_tokens * 1.3 + 500)
+        except Exception:
+            pass  # Fall back to default estimate
+    
+    # Rate limiting and retry logic
+    for attempt_num in range(1, attempts + 1):
+        try:
+            # Apply rate limiting if available
+            if rate_limiter and llm:
+                semaphore = await rate_limiter.acquire_with_semaphore(llm, estimated_tokens)
+                try:
+                    call_start = time.time()
+                    result = await chain.ainvoke(inputs)
+                    call_duration = time.time() - call_start
+                    
+                    # Record successful call
+                    rate_limiter.record_success(llm, call_duration, estimated_tokens)
+                    return result
+                    
+                except Exception as e:
+                    call_duration = time.time() - call_start
+                    rate_limiter.record_failure(llm, e)
+                    
+                    # Handle specific error types
+                    if "rate limit" in str(e).lower() or "429" in str(e):
+                        logger.warning(f"Rate limit hit on attempt {attempt_num}: {e}")
+                        if attempt_num < attempts:
+                            # Progressive backoff for rate limits
+                            wait_time = min(30.0, 2.0 ** attempt_num)
+                            logger.info(f"Waiting {wait_time}s before retry...")
+                            await asyncio.sleep(wait_time)
+                    elif "503" in str(e) or "502" in str(e):
+                        logger.warning(f"API service error on attempt {attempt_num}: {e}")
+                        if attempt_num < attempts:
+                            wait_time = min(60.0, 5.0 ** (attempt_num - 1))
+                            await asyncio.sleep(wait_time)
+                    else:
+                        # Other errors - use exponential backoff
+                        if attempt_num < attempts:
+                            wait_time = min(8.0, 1.0 * (2.0 ** (attempt_num - 1)))
+                            await asyncio.sleep(wait_time)
+                    
+                    # Re-raise if last attempt
+                    if attempt_num == attempts:
+                        raise
+                        
+                finally:
+                    semaphore.release()
+            else:
+                # Fallback to original retry logic when rate limiter not available
+                async for attempt in AsyncRetrying(
+                    stop=stop_after_attempt(attempts),
+                    wait=wait_exponential_jitter(initial=1, max=8)
+                ):
+                    with attempt:
+                        return await chain.ainvoke(inputs)
+        
+        except Exception as e:
+            if attempt_num == attempts:
+                logger.error(f"All {attempts} attempts failed after {time.time() - start_time:.1f}s: {e}")
+                raise
+            
+    raise RuntimeError(f"Exhausted {attempts} retries")
 
 
 def render_worker_prompt_text(
@@ -127,7 +215,7 @@ async def run_worker_agent(
             "json_schema": json_schema,
         }
     
-    rendered = await _ainvoke_with_retry(chain, params)
+    rendered = await _ainvoke_with_retry(chain, params, llm=llm)
     json_text = extract_json_from_text(rendered)
     try:
         return json.loads(json_text)
@@ -137,6 +225,7 @@ async def run_worker_agent(
         repaired = await _ainvoke_with_retry(
             repair_chain,
             {"malformed": rendered, "json_schema": json_schema},
+            llm=llm
         )
         return json.loads(extract_json_from_text(repaired))
 
@@ -152,7 +241,8 @@ async def run_supervisor_agent(
     chain = SUPERVISOR_PROMPT | llm | StrOutputParser()
     rendered = await _ainvoke_with_retry(
         chain,
-        {"reviews": reviews_text_block, "json_schema": JSON_SUPERVISOR_SCHEMA}
+        {"reviews": reviews_text_block, "json_schema": JSON_SUPERVISOR_SCHEMA},
+        llm=llm
     )
     json_text = extract_json_from_text(rendered)
     try:
@@ -163,6 +253,7 @@ async def run_supervisor_agent(
         repaired = await _ainvoke_with_retry(
             repair_chain,
             {"malformed": rendered, "json_schema": JSON_SUPERVISOR_SCHEMA},
+            llm=llm
         )
         return json.loads(extract_json_from_text(repaired))
 
@@ -238,7 +329,7 @@ async def run_iterative_worker_agent(
         }
     
     chain = worker_prompt | llm | StrOutputParser()
-    rendered = await _ainvoke_with_retry(chain, params)
+    rendered = await _ainvoke_with_retry(chain, params, llm=llm)
     json_text = extract_json_from_text(rendered)
     
     try:
@@ -249,6 +340,7 @@ async def run_iterative_worker_agent(
         repaired = await _ainvoke_with_retry(
             repair_chain,
             {"malformed": rendered, "json_schema": json_schema},
+            llm=llm
         )
         return json.loads(extract_json_from_text(repaired))
 
@@ -274,7 +366,7 @@ async def run_iterative_supervisor_agent(
         template="{prompt_text}"
     ) | llm | StrOutputParser()
     
-    rendered = await _ainvoke_with_retry(chain, {"prompt_text": prompt_text})
+    rendered = await _ainvoke_with_retry(chain, {"prompt_text": prompt_text}, llm=llm)
     json_text = extract_json_from_text(rendered)
     
     try:
@@ -285,6 +377,7 @@ async def run_iterative_supervisor_agent(
         repaired = await _ainvoke_with_retry(
             repair_chain,
             {"malformed": rendered, "json_schema": JSON_ITERATIVE_SUPERVISOR_SCHEMA},
+            llm=llm
         )
         return json.loads(extract_json_from_text(repaired))
 
@@ -298,7 +391,7 @@ async def run_synthesizer_agent(
     Returns final Markdown string synthesizing chunk winners for the whole file.
     """
     chain = SYNTHESIZER_PROMPT | llm | StrOutputParser()
-    md = await _ainvoke_with_retry(chain, {"chunk_summaries": chunk_summaries_jsonl})
+    md = await _ainvoke_with_retry(chain, {"chunk_summaries": chunk_summaries_jsonl}, llm=llm)
     return md
 
 
