@@ -26,7 +26,7 @@ class TestIterationController:
     def test_iteration_controller_initialization(self):
         """Test IterationController initialization with different parameters."""
         # Default initialization
-        controller = IterationController()
+        controller = IterationController(retain_full_data=True)
         assert controller.max_iterations == 3
         assert controller.strategy == IterationStrategy.WORKER_POOL
         assert controller.convergence_threshold == 0.8
@@ -37,7 +37,8 @@ class TestIterationController:
         controller = IterationController(
             max_iterations=5,
             strategy=IterationStrategy.FEEDBACK_DRIVEN,
-            convergence_threshold=0.9
+            convergence_threshold=0.9,
+            retain_full_data=True
         )
         assert controller.max_iterations == 5
         assert controller.strategy == IterationStrategy.FEEDBACK_DRIVEN
@@ -56,7 +57,7 @@ class TestIterationController:
     
     def test_should_continue_iterating_logic(self, sample_worker_response, sample_supervisor_response):
         """Test the convergence detection and continuation logic."""
-        controller = IterationController(max_iterations=3, convergence_threshold=0.8)
+        controller = IterationController(max_iterations=3, convergence_threshold=0.8, retain_full_data=True)
         
         # Should continue on first call (no iterations yet)
         assert controller.should_continue_iterating() == True
@@ -90,7 +91,7 @@ class TestIterationController:
     
     def test_max_iterations_limit(self, sample_worker_response, sample_supervisor_response):
         """Test that max_iterations is respected."""
-        controller = IterationController(max_iterations=2)
+        controller = IterationController(max_iterations=2, retain_full_data=True)
         
         # First iteration
         controller.record_iteration([sample_worker_response], sample_supervisor_response, {})
@@ -103,7 +104,7 @@ class TestIterationController:
     
     def test_record_iteration_data_storage(self, sample_worker_response, sample_supervisor_response):
         """Test that iteration data is properly stored."""
-        controller = IterationController()
+        controller = IterationController(retain_full_data=True)
         metadata = {"chunk_index": 1, "file_path": "test.py"}
         
         controller.record_iteration([sample_worker_response], sample_supervisor_response, metadata)
@@ -124,7 +125,7 @@ class TestIterationContextBuilding:
     
     def test_worker_pool_context(self, sample_worker_response, sample_supervisor_response):
         """Test context building for worker_pool strategy."""
-        controller = IterationController(strategy=IterationStrategy.WORKER_POOL)
+        controller = IterationController(strategy=IterationStrategy.WORKER_POOL, retain_full_data=True)
         
         # First iteration context
         context = controller.get_context_for_iteration(1)
@@ -143,7 +144,7 @@ class TestIterationContextBuilding:
     
     def test_feedback_driven_context(self, sample_iterative_supervisor_response, sample_worker_response):
         """Test context building for feedback_driven strategy."""
-        controller = IterationController(strategy=IterationStrategy.FEEDBACK_DRIVEN)
+        controller = IterationController(strategy=IterationStrategy.FEEDBACK_DRIVEN, retain_full_data=True)
         
         # First iteration - no feedback yet
         context = controller.get_context_for_iteration(1)
@@ -159,7 +160,7 @@ class TestIterationContextBuilding:
     
     def test_consensus_context(self, sample_worker_response, sample_supervisor_response):
         """Test context building for consensus strategy."""
-        controller = IterationController(strategy=IterationStrategy.CONSENSUS)
+        controller = IterationController(strategy=IterationStrategy.CONSENSUS, retain_full_data=True)
         
         # First iteration - no peer reviews yet
         context = controller.get_context_for_iteration(1)
@@ -176,7 +177,7 @@ class TestIterationContextBuilding:
     
     def test_context_includes_iteration_summaries(self, sample_worker_response, sample_supervisor_response):
         """Test that context includes summaries of previous iterations."""
-        controller = IterationController()
+        controller = IterationController(retain_full_data=True)
         
         # Add two iterations
         controller.record_iteration([sample_worker_response], sample_supervisor_response, {"test": "meta1"})
@@ -336,7 +337,7 @@ class TestConvergenceAnalysis:
     
     def test_improvement_trajectory_analysis(self, sample_worker_response):
         """Test improvement trajectory analysis."""
-        controller = IterationController()
+        controller = IterationController(retain_full_data=True)
         
         # Simulate improving scores across iterations
         supervisor_responses = [
@@ -355,7 +356,7 @@ class TestConvergenceAnalysis:
     
     def test_best_iteration_identification(self, sample_worker_response):
         """Test identification of best iteration."""
-        controller = IterationController()
+        controller = IterationController(retain_full_data=True)
         
         # Simulate iterations with different quality scores
         supervisor_responses = [
@@ -373,7 +374,7 @@ class TestConvergenceAnalysis:
     
     def test_final_synthesis_data(self, sample_worker_response):
         """Test final synthesis data generation."""
-        controller = IterationController(max_iterations=2)
+        controller = IterationController(max_iterations=2, retain_full_data=True)
         
         # Add iterations
         supervisor_resp = {"scores": [{"accuracy": 0.8, "completeness": 0.8, "clarity": 0.8, "insightfulness": 0.8}]}
@@ -393,7 +394,7 @@ class TestConvergenceAnalysis:
         """Test that early stopping works with convergence threshold."""
         # This is more of an integration test - in practice convergence would be detected
         # by similarity between reviews, but we test the framework
-        controller = IterationController(max_iterations=5, convergence_threshold=0.9)
+        controller = IterationController(max_iterations=5, convergence_threshold=0.9, retain_full_data=True)
         
         # Add iterations
         supervisor_resp = {"scores": [{"accuracy": 0.8, "completeness": 0.8, "clarity": 0.8, "insightfulness": 0.8}]}
@@ -411,7 +412,7 @@ class TestIterationErrorHandling:
     
     def test_iteration_controller_with_no_history(self):
         """Test methods work correctly with no iteration history."""
-        controller = IterationController()
+        controller = IterationController(retain_full_data=True)
         
         # Should handle empty history gracefully
         trajectory = controller._analyze_improvement_trajectory()
@@ -423,7 +424,7 @@ class TestIterationErrorHandling:
     
     def test_malformed_supervisor_scores(self, sample_worker_response):
         """Test handling of malformed supervisor scores."""
-        controller = IterationController()
+        controller = IterationController(retain_full_data=True)
         
         # Supervisor response with missing scores
         malformed_supervisor = {"analysis": "Good", "winner_index": 1}
@@ -438,7 +439,7 @@ class TestIterationErrorHandling:
     
     def test_empty_worker_reviews(self):
         """Test handling of empty worker reviews."""
-        controller = IterationController()
+        controller = IterationController(retain_full_data=True)
         supervisor_resp = {"scores": []}
         
         controller.record_iteration([], supervisor_resp, {})
@@ -475,7 +476,7 @@ class TestIterationMetadata:
     
     def test_iteration_timestamp_recording(self, sample_worker_response, sample_supervisor_response):
         """Test that iterations record timestamps."""
-        controller = IterationController()
+        controller = IterationController(retain_full_data=True)
         
         controller.record_iteration([sample_worker_response], sample_supervisor_response, {})
         
@@ -485,7 +486,7 @@ class TestIterationMetadata:
     
     def test_iteration_summary_generation(self, sample_worker_response, sample_supervisor_response):
         """Test iteration summary generation for context."""
-        controller = IterationController()
+        controller = IterationController(retain_full_data=True)
         
         metadata = {"chunk_index": 1, "file_path": "test.py"}
         controller.record_iteration([sample_worker_response], sample_supervisor_response, metadata)
@@ -500,7 +501,7 @@ class TestIterationMetadata:
     
     def test_convergence_indicators_extraction(self, sample_worker_response, sample_supervisor_response):
         """Test extraction of convergence indicators."""
-        controller = IterationController()
+        controller = IterationController(retain_full_data=True)
         
         # Add multiple iterations
         for i in range(3):
@@ -517,7 +518,7 @@ class TestIterationMetadata:
     
     def test_anonymized_review_creation(self, sample_worker_response):
         """Test creation of anonymized reviews for consensus strategy."""
-        controller = IterationController()
+        controller = IterationController(retain_full_data=True)
         
         reviews = [sample_worker_response, sample_worker_response.copy()]
         anonymized = controller._anonymize_reviews(reviews)

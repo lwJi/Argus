@@ -370,7 +370,8 @@ async def review_single_file(
                 iteration_controller = IterationController(
                     max_iterations=iterations,
                     strategy=strategy_enum,
-                    convergence_threshold=convergence_threshold
+                    convergence_threshold=convergence_threshold,
+                    retain_full_data=args.retain_full_iteration_data
                 )
                 
                 summary, iter_workers_json, iter_sup_json = await review_chunk_iterative(
@@ -693,6 +694,8 @@ async def main():
                         help="Strategy for iterative improvement: worker_pool (different models), feedback_driven (supervisor feedback), or consensus (peer review sharing)")
     parser.add_argument("--convergence-threshold", type=float, default=0.8,
                         help="Convergence threshold for early stopping (0.0-1.0, default: 0.8)")
+    parser.add_argument("--retain-full-iteration-data", action="store_true",
+                        help="Retain full iteration data (increases memory usage, useful for debugging)")
 
     args = parser.parse_args()
 
