@@ -527,3 +527,4 @@ class TestIterationMetadata:
             # Should preserve important content but remove identifying information
             assert "findings" in anon_review or "summary" in anon_review
             # This is a placeholder - real implementation would remove model-specific info
+            assert isinstance(anon_review, dict)
