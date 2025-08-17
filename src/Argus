@@ -5,7 +5,7 @@ import os
 import argparse
 import asyncio
 import json
-from typing import List, Dict
+from typing import List, Dict, Tuple, Any
 from dotenv import load_dotenv, find_dotenv
 from pathlib import Path
 from rich.console import Console
@@ -288,7 +288,7 @@ async def review_chunk_iterative(
     
     # Generate final synthesis across all iterations
     final_synthesis_data = iteration_controller.get_final_synthesis_data()
-    best_iteration_idx = final_synthesis_data["best_iteration"] - 1  # Convert to 0-based index
+    best_iteration_idx = final_synthesis_data["best_iteration"]["iteration"] - 1  # Convert to 0-based index
     
     # Use results from best iteration, but include iteration metadata
     if all_iterations_supervisors and best_iteration_idx < len(all_iterations_supervisors):

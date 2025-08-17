@@ -609,9 +609,9 @@ class IterationController:
             supervisor = iteration.get("supervisor_result", {})
             scores = supervisor.get("scores", [])
             if scores:
-                avg_score = sum(sum(s.get("accuracy", 0) + s.get("completeness", 0) + 
-                                  s.get("clarity", 0) + s.get("insightfulness", 0) 
-                                  for s in scores)) / (len(scores) * 4)
+                avg_score = sum(s.get("accuracy", 0) + s.get("completeness", 0) + 
+                                s.get("clarity", 0) + s.get("insightfulness", 0) 
+                                for s in scores) / (len(scores) * 4)
                 trajectories["quality_scores"].append(avg_score)
             else:
                 trajectories["quality_scores"].append(0.0)
