@@ -372,7 +372,8 @@ async def review_single_file(
                 iteration_controller = IterationController(
                     max_iterations=iterations,
                     strategy=strategy_enum,
-                    convergence_threshold=convergence_threshold
+                    convergence_threshold=convergence_threshold,
+                    retain_full_data=args.retain_full_iteration_data
                 )
                 
                 summary, iter_workers_json, iter_sup_json = await review_chunk_iterative(

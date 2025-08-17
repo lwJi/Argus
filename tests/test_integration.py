@@ -349,7 +349,7 @@ class TestIterativeIntegration:
         """Test complete iterative review workflow."""
         from agents import IterationController, IterationStrategy, run_iterative_worker_agent, run_iterative_supervisor_agent
         
-        controller = IterationController(max_iterations=2, strategy=IterationStrategy.WORKER_POOL)
+        controller = IterationController(max_iterations=2, strategy=IterationStrategy.WORKER_POOL, retain_full_data=True)
         
         with patch('agents._ainvoke_with_retry') as mock_retry:
             # Mock iterative responses - improving over iterations
@@ -434,7 +434,7 @@ class TestCombinedLinusIterative:
         """Test Linus mode combined with iterative review."""
         from agents import IterationController, IterationStrategy, run_iterative_worker_agent, run_iterative_supervisor_agent
         
-        controller = IterationController(max_iterations=2, strategy=IterationStrategy.FEEDBACK_DRIVEN)
+        controller = IterationController(max_iterations=2, strategy=IterationStrategy.FEEDBACK_DRIVEN, retain_full_data=True)
         
         with patch('agents._ainvoke_with_retry') as mock_retry:
             # Mock Linus responses across iterations

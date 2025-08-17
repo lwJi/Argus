@@ -486,7 +486,8 @@ class TestIterativeAgents:
         
         controller = IterationController(
             max_iterations=3,
-            strategy=IterationStrategy.FEEDBACK_DRIVEN
+            strategy=IterationStrategy.FEEDBACK_DRIVEN,
+            retain_full_data=True
         )
         
         context = controller.get_context_for_iteration(2)
