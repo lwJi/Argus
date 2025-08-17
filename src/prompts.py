@@ -53,31 +53,24 @@ JSON_LINUS_SCHEMA = """
 Return ONLY valid JSON with this exact structure (no prose outside JSON). All keys must be present.
 Allowed values:
 - taste_score ∈ {"good","so-so","trash"}
-- judgment ∈ {"worth_doing","not_worth_doing"}
+- core_judgment ∈ {"worth_doing","not_worth_doing"}
 
 {
   "pre_analysis": {
-    "is_real_problem": "Is this a real problem or imagined one?",
-    "is_simpler_way": "Is there a simpler way to solve this?", 
+    "real_problem": "Is this a real problem or imagined one?",
+    "simpler_way": "Is there a simpler way to solve this?", 
     "breaks_compatibility": "Will this break anything?"
   },
-  "core_judgment": {
-    "judgment": "worth_doing",
-    "reason": "why this is worth doing or not"
-  },
+  "core_judgment": "worth_doing",
   "taste_score": "good",
   "fatal_problems": [
-    {
-      "title": "most critical issue",
-      "lines": [12, 13],
-      "explanation": "why this is fatal",
-      "linus_comment": "direct technical criticism"
-    }
+    "most critical issue description",
+    "another fatal problem if any"
   ],
   "key_insights": {
     "data_structure": "most critical data relationship issue",
-    "complexity": "complexity that can be removed", 
-    "risk_point": "most destructive risk"
+    "complexity_removal": "complexity that can be removed", 
+    "risk_assessment": "most destructive risk"
   },
   "improvement_direction": [
     "eliminate this special case",
@@ -86,9 +79,10 @@ Allowed values:
   ],
   "linus_analysis": {
     "data_structure_analysis": "what are core data, how related, unnecessary copies?",
-    "special_cases": "identify if/else branches that are band-aids vs real logic",
+    "special_case_elimination": "identify if/else branches that are band-aids vs real logic",
     "complexity_review": "essence in one sentence, concepts used, can be halved?",
-    "practicality": "does this exist in production, how many affected?"
+    "destructiveness_analysis": "what existing functionality could be broken?",
+    "practicality_verification": "does this exist in production, how many affected?"
   }
 }
 """
