@@ -11,10 +11,12 @@ from prompts import (
     WORKER_PROMPT_GENERIC,
     WORKER_PROMPT_CPP,
     WORKER_PROMPT_PY,
+    WORKER_PROMPT_LINUS,
     SUPERVISOR_PROMPT,
     SYNTHESIZER_PROMPT,
     JSON_WORKER_SCHEMA,
     JSON_SUPERVISOR_SCHEMA,
+    JSON_LINUS_SCHEMA,
 )
 from utils import extract_json_from_text
 
@@ -50,18 +52,19 @@ async def _ainvoke_with_retry(chain, inputs: dict, attempts: int = 4) -> str:
 
 
 def render_worker_prompt_text(
-    *, language: str, file_path: str, chunk_index: int, total_chunks: int, code_with_line_numbers: str
+    *, language: str, file_path: str, chunk_index: int, total_chunks: int, code_with_line_numbers: str, linus_mode: bool = False
 ) -> str:
-    worker_prompt = _pick_worker_prompt(language)
+    worker_prompt = _pick_worker_prompt(language, linus_mode=linus_mode)
+    json_schema = JSON_LINUS_SCHEMA if linus_mode else JSON_WORKER_SCHEMA
     return worker_prompt.format(
         **(
-            {"language": language} if worker_prompt is WORKER_PROMPT_GENERIC else {}
+            {"language": language} if worker_prompt in (WORKER_PROMPT_GENERIC, WORKER_PROMPT_LINUS) else {}
         ),
         file_path=file_path,
         chunk_index=chunk_index,
         total_chunks=total_chunks,
         code_with_line_numbers=code_with_line_numbers,
-        json_schema=JSON_WORKER_SCHEMA,
+        json_schema=json_schema,
     )
 
 
@@ -73,7 +76,9 @@ def render_synthesizer_prompt_text(*, chunk_summaries_jsonl: str) -> str:
     return SYNTHESIZER_PROMPT.format(chunk_summaries=chunk_summaries_jsonl)
 
 
-def _pick_worker_prompt(language: str):
+def _pick_worker_prompt(language: str, linus_mode: bool = False):
+    if linus_mode:
+        return WORKER_PROMPT_LINUS
     if language == "cpp":
         return WORKER_PROMPT_CPP
     if language == "python":
@@ -88,32 +93,36 @@ async def run_worker_agent(
     file_path: str,
     chunk_index: int,
     total_chunks: int,
-    code_with_line_numbers: str
+    code_with_line_numbers: str,
+    linus_mode: bool = False
 ) -> Dict[str, Any]:
     """
-    Returns parsed JSON dict following the worker schema.
+    Returns parsed JSON dict following the worker schema (or Linus schema if linus_mode=True).
     """
-    worker_prompt = _pick_worker_prompt(language)
+    worker_prompt = _pick_worker_prompt(language, linus_mode=linus_mode)
+    json_schema = JSON_LINUS_SCHEMA if linus_mode else JSON_WORKER_SCHEMA
     chain = worker_prompt | llm | StrOutputParser()
-    rendered = await _ainvoke_with_retry(
-        chain,
-        {
+    
+    # Build parameters based on prompt type
+    if worker_prompt in (WORKER_PROMPT_GENERIC, WORKER_PROMPT_LINUS):
+        params = {
             "language": language,
             "file_path": file_path,
             "chunk_index": chunk_index,
             "total_chunks": total_chunks,
             "code_with_line_numbers": code_with_line_numbers,
-            "json_schema": JSON_WORKER_SCHEMA,
+            "json_schema": json_schema,
         }
-        if worker_prompt is WORKER_PROMPT_GENERIC else
-        {
+    else:
+        params = {
             "file_path": file_path,
             "chunk_index": chunk_index,
             "total_chunks": total_chunks,
             "code_with_line_numbers": code_with_line_numbers,
-            "json_schema": JSON_WORKER_SCHEMA,
+            "json_schema": json_schema,
         }
-    )
+    
+    rendered = await _ainvoke_with_retry(chain, params)
     json_text = extract_json_from_text(rendered)
     try:
         return json.loads(json_text)
@@ -122,7 +131,7 @@ async def run_worker_agent(
         repair_chain = (REPAIR_JSON_PROMPT | llm | StrOutputParser())
         repaired = await _ainvoke_with_retry(
             repair_chain,
-            {"malformed": rendered, "json_schema": JSON_WORKER_SCHEMA},
+            {"malformed": rendered, "json_schema": json_schema},
         )
         return json.loads(extract_json_from_text(repaired))
 

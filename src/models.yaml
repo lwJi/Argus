@@ -6,3 +6,16 @@ workers:
 supervisor:
   model: gpt-4o-mini
   temperature: 0.1
+
+# Configuration example for Linus mode
+# Use when running with --linus-mode flag
+# Linus mode benefits from more sophisticated models due to complex analytical framework
+linus_example:
+  workers:
+    - model: gpt-4o
+      temperature: 0.2
+    - model: gpt-4o
+      temperature: 0.4
+  supervisor:
+    model: gpt-4o
+    temperature: 0.1

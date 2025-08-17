@@ -83,6 +83,7 @@ async def review_chunk_for_file(
     total_chunks: int,
     code_chunk: str,
     start_line: int,
+    linus_mode: bool = False,
 ):
     # Prepare numbered code using the actual chunk start line
     numbered = add_line_numbers_preserve(code_chunk, start_line=start_line)
@@ -96,6 +97,7 @@ async def review_chunk_for_file(
             chunk_index=chunk_index,
             total_chunks=total_chunks,
             code_with_line_numbers=numbered,
+            linus_mode=linus_mode,
         )
         for w in llms["workers"]
     ]
@@ -181,7 +183,8 @@ async def review_single_file(
     file_path: str,
     save_dir: str,
     chunk_size: int = DEFAULT_CHUNK_SIZE,
-    max_lines_before_chunk: int = DEFAULT_MAX_LINES
+    max_lines_before_chunk: int = DEFAULT_MAX_LINES,
+    linus_mode: bool = False
 ):
     # Read file
     try:
@@ -220,6 +223,7 @@ async def review_single_file(
                 total_chunks=total_chunks,
                 code_chunk=chunk_text,
                 start_line=_start,
+                linus_mode=linus_mode,
             )
             summaries.append(summary)
             all_workers_json.append(worker_jsons)
@@ -263,6 +267,7 @@ def preflight_estimate(
     assume_worker_out: int,
     assume_supervisor_out: int,
     assume_synthesizer_out: int,
+    linus_mode: bool = False,
 ) -> Dict[str, int]:
     """
     Build prompts (without API calls), estimate tokens before running.
@@ -297,7 +302,7 @@ def preflight_estimate(
             for wm in worker_models:
                 prompt_text = render_worker_prompt_text(
                     language=language, file_path=fp, chunk_index=idx, total_chunks=total_chunks,
-                    code_with_line_numbers=numbered
+                    code_with_line_numbers=numbered, linus_mode=linus_mode
                 )
                 total_in += count_tokens_text(wm, prompt_text)
                 total_out += assume_worker_out
@@ -352,6 +357,8 @@ async def main():
                         help="Assumed max output tokens per synthesizer result")
     parser.add_argument("--skip-preflight", action="store_true",
                         help="Run without token preflight/approval")
+    parser.add_argument("--linus-mode", action="store_true",
+                        help="Use Linus Torvalds review style with systematic analysis framework")
 
     args = parser.parse_args()
 
@@ -390,6 +397,7 @@ async def main():
             assume_worker_out=args.assume_worker_out,
             assume_supervisor_out=args.assume_supervisor_out,
             assume_synthesizer_out=args.assume_synthesizer_out,
+            linus_mode=args.linus_mode,
         )
         table = Table(title="Token Preflight (approx.)")
         table.add_column("Stage")
@@ -425,7 +433,8 @@ async def main():
             file_path=fp,
             save_dir=args.save_dir,
             chunk_size=args.chunk_size,
-            max_lines_before_chunk=args.chunk_threshold
+            max_lines_before_chunk=args.chunk_threshold,
+            linus_mode=args.linus_mode
         )
 
 if __name__ == "__main__":
