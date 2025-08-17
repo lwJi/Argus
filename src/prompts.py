@@ -93,6 +93,75 @@ Allowed values:
 }
 """
 
+# ---------- Iteration-Enhanced Schemas ----------
+JSON_ITERATIVE_SUPERVISOR_SCHEMA = """
+Return ONLY valid JSON with this structure for iterative multi-agent review (no prose outside JSON):
+
+{
+  "analysis": "brief comparison across reviews and iterations",
+  "scores": [
+    {
+      "review_index": 1,
+      "accuracy": 0.0,
+      "completeness": 0.0,
+      "clarity": 0.0,
+      "insightfulness": 0.0,
+      "notes": "brief justification"
+    }
+  ],
+  "winner_index": 1,
+  "merged_takeaways": [
+    "concise bullet capturing the best, non-duplicated insights across reviews"
+  ],
+  "winning_review_text": "the full text of the winning review",
+  "iteration_comparison": {
+    "improvement_over_previous": "how this iteration improved (or didn't)",
+    "convergence_indicators": "signs that reviews are stabilizing",
+    "remaining_gaps": "areas that still need attention"
+  },
+  "feedback_for_next_iteration": "specific guidance for workers in next iteration (if applicable)"
+}
+"""
+
+JSON_FINAL_SYNTHESIS_SCHEMA = """
+Return ONLY valid JSON for final cross-iteration synthesis (no prose outside JSON):
+
+{
+  "executive_summary": "high-level synthesis across all iterations",
+  "best_findings": [
+    {
+      "source_iteration": 2,
+      "type": "bug",
+      "title": "finding title",
+      "severity": "high", 
+      "confidence": "high",
+      "evolution": "how this finding evolved across iterations"
+    }
+  ],
+  "iteration_analysis": {
+    "total_iterations": 3,
+    "convergence_achieved": true,
+    "quality_trend": "improving",
+    "best_iteration": 2,
+    "iteration_summaries": [
+      {
+        "iteration": 1,
+        "quality_score": 0.7,
+        "key_contribution": "initial baseline analysis"
+      }
+    ]
+  },
+  "final_recommendations": [
+    "prioritized actionable recommendations from across all iterations"
+  ],
+  "confidence_metrics": {
+    "overall_confidence": 0.85,
+    "consensus_strength": 0.9,
+    "iteration_stability": 0.8
+  }
+}
+"""
+
 # ---------- Worker Prompts (Language-aware) ----------
 WORKER_PROMPT_GENERIC_TEMPLATE = """
 You are an expert AI code reviewer.
@@ -116,6 +185,44 @@ IMPORTANT:
 {code_with_line_numbers}
 --- CODE END ---
 """
+
+# ---------- Iteration-Aware Worker Prompts ----------
+WORKER_PROMPT_ITERATIVE_TEMPLATE = """
+You are an expert AI code reviewer in an iterative improvement process.
+
+Context:
+- Language: {language}
+- File: {file_path}
+- Chunk: {chunk_index}/{total_chunks}
+- Iteration: {iteration}/{total_iterations}
+- Strategy: {strategy}
+
+{iteration_context}
+
+Your task is to analyze the following code for issues with:
+1) Bugs/Errors, 2) Performance, 3) Style/Readability, 4) Maintainability/Best Practices.
+
+ITERATIVE REVIEW INSTRUCTIONS:
+{iteration_instructions}
+
+IMPORTANT:
+- Use the provided line numbers (the code is prefixed with L###).
+- Be specific and actionable.
+- Consider the iteration context and previous findings.
+- Follow the JSON schema strictly.
+
+{json_schema}
+
+--- CODE START ---
+{code_with_line_numbers}
+--- CODE END ---
+"""
+
+ITERATION_INSTRUCTIONS = {
+    "worker_pool": "Focus on bringing a different perspective from previous iterations. Use your unique model characteristics to find issues others may have missed.",
+    "feedback_driven": "Pay special attention to the supervisor feedback from the previous iteration. Address the specific gaps and areas for improvement mentioned.",
+    "consensus": "Consider the peer reviews from the previous iteration. Look for areas where reviewers disagreed or missed issues. Aim for comprehensive coverage."
+}
 
 WORKER_PROMPT_CPP_TEMPLATE = """
 You are an expert C++ reviewer (C++17/20). Apply C++ Core Guidelines, RAII, const-correctness,
@@ -233,6 +340,13 @@ WORKER_PROMPT_LINUS = PromptTemplate(
     input_variables=["language", "file_path", "chunk_index",
                      "total_chunks", "code_with_line_numbers", "json_schema"],
     template=WORKER_PROMPT_LINUS_TEMPLATE
+)
+
+WORKER_PROMPT_ITERATIVE = PromptTemplate(
+    input_variables=["language", "file_path", "chunk_index", "total_chunks",
+                     "iteration", "total_iterations", "strategy", "iteration_context",
+                     "iteration_instructions", "code_with_line_numbers", "json_schema"],
+    template=WORKER_PROMPT_ITERATIVE_TEMPLATE
 )
 
 # ---------- Supervisor Prompt ----------

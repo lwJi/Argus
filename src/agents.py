@@ -1,7 +1,8 @@
 # agents.py
 import json
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 import copy
+from enum import Enum
 from tenacity import AsyncRetrying, stop_after_attempt, wait_exponential_jitter
 from langchain_core.output_parsers import StrOutputParser
 from langchain.prompts import PromptTemplate
@@ -12,11 +13,15 @@ from prompts import (
     WORKER_PROMPT_CPP,
     WORKER_PROMPT_PY,
     WORKER_PROMPT_LINUS,
+    WORKER_PROMPT_ITERATIVE,
     SUPERVISOR_PROMPT,
     SYNTHESIZER_PROMPT,
     JSON_WORKER_SCHEMA,
     JSON_SUPERVISOR_SCHEMA,
     JSON_LINUS_SCHEMA,
+    JSON_ITERATIVE_SUPERVISOR_SCHEMA,
+    JSON_FINAL_SYNTHESIS_SCHEMA,
+    ITERATION_INSTRUCTIONS,
 )
 from utils import extract_json_from_text
 
@@ -162,6 +167,128 @@ async def run_supervisor_agent(
         return json.loads(extract_json_from_text(repaired))
 
 
+async def run_iterative_worker_agent(
+    llm: ChatOpenAI,
+    *,
+    language: str,
+    file_path: str,
+    chunk_index: int,
+    total_chunks: int,
+    code_with_line_numbers: str,
+    iteration_context: Dict[str, Any],
+    linus_mode: bool = False
+) -> Dict[str, Any]:
+    """
+    Iterative worker agent that uses iteration context for improved reviews.
+    """
+    iteration_num = iteration_context.get("iteration", 1)
+    total_iterations = iteration_context.get("total_iterations_planned", 1)
+    strategy = iteration_context.get("strategy", "worker_pool")
+    
+    # Build iteration context string
+    context_parts = []
+    if iteration_context.get("supervisor_feedback"):
+        context_parts.append(f"SUPERVISOR FEEDBACK: {iteration_context['supervisor_feedback']}")
+        
+    if iteration_context.get("peer_reviews_previous"):
+        peer_count = len(iteration_context["peer_reviews_previous"])
+        context_parts.append(f"PREVIOUS PEER REVIEWS: {peer_count} reviews from previous iteration")
+        # Could include actual peer review summaries here
+        
+    if iteration_context.get("previous_iterations"):
+        prev_summaries = []
+        for prev in iteration_context["previous_iterations"]:
+            prev_summaries.append(f"Iteration {prev['iteration']}: {prev['summary']}")
+        context_parts.append(f"HISTORY: {'; '.join(prev_summaries)}")
+    
+    context_str = "\n".join(context_parts) if context_parts else "First iteration - no previous context."
+    
+    # Get strategy-specific instructions
+    instructions = ITERATION_INSTRUCTIONS.get(strategy, ITERATION_INSTRUCTIONS["worker_pool"])
+    
+    # Use iterative prompt or fall back to regular prompts
+    if linus_mode:
+        # For Linus mode, use regular Linus prompt (could enhance later)
+        worker_prompt = WORKER_PROMPT_LINUS
+        json_schema = JSON_LINUS_SCHEMA
+        params = {
+            "language": language,
+            "file_path": file_path,
+            "chunk_index": chunk_index,
+            "total_chunks": total_chunks,
+            "code_with_line_numbers": code_with_line_numbers,
+            "json_schema": json_schema,
+        }
+    else:
+        # Use iterative prompt
+        worker_prompt = WORKER_PROMPT_ITERATIVE
+        json_schema = JSON_WORKER_SCHEMA
+        params = {
+            "language": language,
+            "file_path": file_path,
+            "chunk_index": chunk_index,
+            "total_chunks": total_chunks,
+            "iteration": iteration_num,
+            "total_iterations": total_iterations,
+            "strategy": strategy,
+            "iteration_context": context_str,
+            "iteration_instructions": instructions,
+            "code_with_line_numbers": code_with_line_numbers,
+            "json_schema": json_schema,
+        }
+    
+    chain = worker_prompt | llm | StrOutputParser()
+    rendered = await _ainvoke_with_retry(chain, params)
+    json_text = extract_json_from_text(rendered)
+    
+    try:
+        return json.loads(json_text)
+    except Exception:
+        # Repair JSON if needed
+        repair_chain = (REPAIR_JSON_PROMPT | llm | StrOutputParser())
+        repaired = await _ainvoke_with_retry(
+            repair_chain,
+            {"malformed": rendered, "json_schema": json_schema},
+        )
+        return json.loads(extract_json_from_text(repaired))
+
+
+async def run_iterative_supervisor_agent(
+    llm: ChatOpenAI,
+    *,
+    reviews_text_block: str,
+    iteration_context: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    Enhanced supervisor agent that handles iteration-aware review comparison.
+    Returns parsed JSON dict following the iterative supervisor schema.
+    """
+    # Create iteration-aware prompt that includes context from previous iterations
+    prompt_text = render_iterative_supervisor_prompt_text(
+        reviews_text_block=reviews_text_block,
+        iteration_context=iteration_context
+    )
+    
+    chain = PromptTemplate(
+        input_variables=["prompt_text"],
+        template="{prompt_text}"
+    ) | llm | StrOutputParser()
+    
+    rendered = await _ainvoke_with_retry(chain, {"prompt_text": prompt_text})
+    json_text = extract_json_from_text(rendered)
+    
+    try:
+        return json.loads(json_text)
+    except Exception:
+        # Proper repair: feed the malformed output to a strict JSON normalizer
+        repair_chain = (REPAIR_JSON_PROMPT | llm | StrOutputParser())
+        repaired = await _ainvoke_with_retry(
+            repair_chain,
+            {"malformed": rendered, "json_schema": JSON_ITERATIVE_SUPERVISOR_SCHEMA},
+        )
+        return json.loads(extract_json_from_text(repaired))
+
+
 async def run_synthesizer_agent(
     llm: ChatOpenAI,
     *,
@@ -173,6 +300,58 @@ async def run_synthesizer_agent(
     chain = SYNTHESIZER_PROMPT | llm | StrOutputParser()
     md = await _ainvoke_with_retry(chain, {"chunk_summaries": chunk_summaries_jsonl})
     return md
+
+
+def render_iterative_supervisor_prompt_text(*, reviews_text_block: str, iteration_context: Dict[str, Any]) -> str:
+    """
+    Render supervisor prompt with iteration context for iterative review improvement.
+    """
+    # Build context section based on iteration strategy and history
+    context_parts = []
+    
+    # Add current iteration info
+    iteration_num = iteration_context.get("iteration", 1)
+    total_planned = iteration_context.get("total_iterations_planned", 1)
+    strategy = iteration_context.get("strategy", "worker_pool")
+    
+    context_parts.append(f"ITERATION CONTEXT: This is iteration {iteration_num} of {total_planned} using {strategy} strategy.")
+    
+    # Add strategy-specific context
+    if iteration_context.get("supervisor_feedback"):
+        context_parts.append(f"PREVIOUS FEEDBACK: {iteration_context['supervisor_feedback']}")
+        
+    if iteration_context.get("peer_reviews_previous"):
+        peer_count = len(iteration_context["peer_reviews_previous"])
+        context_parts.append(f"PREVIOUS PEER REVIEWS: {peer_count} anonymized reviews from previous iteration available for comparison.")
+        
+    # Add previous iteration summaries
+    if iteration_context.get("previous_iterations"):
+        prev_summaries = []
+        for prev in iteration_context["previous_iterations"]:
+            prev_summaries.append(f"Iteration {prev['iteration']}: {prev['summary']}")
+        context_parts.append(f"ITERATION HISTORY: {'; '.join(prev_summaries)}")
+    
+    context_block = "\n".join(context_parts) if context_parts else "This is the first iteration."
+    
+    prompt_template = f"""
+You are an expert supervisor evaluating multiple AI code reviews in an iterative improvement process.
+
+{context_block}
+
+TASK: Compare the reviews below and select the best one. For iterative reviews, also:
+1. Compare quality against previous iterations (if any)
+2. Identify convergence indicators (are reviews becoming similar?)
+3. Note remaining gaps that future iterations should address
+4. Provide specific feedback for next iteration (if more are planned)
+
+REVIEWS TO EVALUATE:
+{reviews_text_block}
+
+Provide your analysis using this JSON schema:
+{JSON_ITERATIVE_SUPERVISOR_SCHEMA}
+"""
+    
+    return prompt_template.strip()
 
 def _clip_str(s: Any, n: int) -> Any:
     if not isinstance(s, str):
@@ -226,3 +405,267 @@ def format_reviews_for_supervisor(worker_jsons: List[dict]) -> str:
         blocks.append(
             f"--- Review {i} JSON ---\n{json.dumps(j, ensure_ascii=False, indent=2)}")
     return "\n\n".join(blocks)
+
+
+class IterationStrategy(Enum):
+    """Defines different strategies for iterative review improvement."""
+    WORKER_POOL = "worker_pool"          # Different models/temperatures each iteration
+    FEEDBACK_DRIVEN = "feedback_driven"  # Supervisor feedback guides next iteration
+    CONSENSUS = "consensus"              # Workers see peer reviews from previous iteration
+
+
+class IterationController:
+    """
+    Manages iterative multi-agent review process with convergence detection and strategy control.
+    """
+    
+    def __init__(self, max_iterations: int = 3, strategy: IterationStrategy = IterationStrategy.WORKER_POOL, 
+                 convergence_threshold: float = 0.8):
+        self.max_iterations = max_iterations
+        self.strategy = strategy
+        self.convergence_threshold = convergence_threshold
+        self.iteration_history: List[Dict[str, Any]] = []
+        self.current_iteration = 0
+        
+    def should_continue_iterating(self) -> bool:
+        """Determine if another iteration should be performed based on convergence and limits."""
+        if self.current_iteration >= self.max_iterations:
+            return False
+            
+        if self.current_iteration < 2:  # Need at least 2 iterations to compare
+            return True
+            
+        # Check convergence based on review similarity
+        if len(self.iteration_history) >= 2:
+            current_reviews = self.iteration_history[-1].get("worker_reviews", [])
+            previous_reviews = self.iteration_history[-2].get("worker_reviews", [])
+            
+            convergence_score = self._calculate_convergence(current_reviews, previous_reviews)
+            return convergence_score < self.convergence_threshold
+            
+        return True
+        
+    def record_iteration(self, worker_reviews: List[Dict], supervisor_result: Dict, 
+                        metadata: Dict[str, Any] = None) -> None:
+        """Record the results of an iteration for convergence analysis and history tracking."""
+        iteration_data = {
+            "iteration": self.current_iteration + 1,
+            "worker_reviews": copy.deepcopy(worker_reviews),
+            "supervisor_result": copy.deepcopy(supervisor_result),
+            "metadata": metadata or {},
+            "timestamp": self._get_timestamp()
+        }
+        self.iteration_history.append(iteration_data)
+        self.current_iteration += 1
+        
+    def get_context_for_iteration(self, iteration_num: int) -> Dict[str, Any]:
+        """Get context data for the specified iteration based on strategy."""
+        context = {
+            "iteration": iteration_num,
+            "total_iterations_planned": self.max_iterations,
+            "strategy": self.strategy.value,
+            "previous_iterations": []
+        }
+        
+        if self.strategy == IterationStrategy.FEEDBACK_DRIVEN and self.iteration_history:
+            # Include supervisor feedback from previous iteration
+            last_iteration = self.iteration_history[-1]
+            context["supervisor_feedback"] = last_iteration["supervisor_result"].get("feedback_for_next_iteration", "")
+            
+        elif self.strategy == IterationStrategy.CONSENSUS and self.iteration_history:
+            # Include anonymized peer reviews from previous iteration
+            last_iteration = self.iteration_history[-1]
+            anonymized_reviews = self._anonymize_reviews(last_iteration["worker_reviews"])
+            context["peer_reviews_previous"] = anonymized_reviews
+            
+        # Always include summary of previous iterations for context
+        for hist in self.iteration_history:
+            context["previous_iterations"].append({
+                "iteration": hist["iteration"],
+                "summary": self._summarize_iteration(hist),
+                "convergence_indicators": self._get_convergence_indicators(hist)
+            })
+            
+        return context
+        
+    def get_final_synthesis_data(self) -> Dict[str, Any]:
+        """Prepare data for final cross-iteration synthesis."""
+        return {
+            "total_iterations": len(self.iteration_history),
+            "strategy_used": self.strategy.value,
+            "convergence_achieved": len(self.iteration_history) < self.max_iterations,
+            "iteration_history": self.iteration_history,
+            "improvement_trajectory": self._analyze_improvement_trajectory(),
+            "best_iteration": self._identify_best_iteration()
+        }
+        
+    def _calculate_convergence(self, current: List[Dict], previous: List[Dict]) -> float:
+        """Calculate convergence score between two sets of reviews (0.0 = different, 1.0 = identical)."""
+        if not current or not previous:
+            return 0.0
+            
+        # Simple convergence based on finding counts and severity distributions
+        current_summary = self._extract_review_summary(current)
+        previous_summary = self._extract_review_summary(previous)
+        
+        # Compare key metrics
+        metrics = ["total_findings", "critical_count", "high_count", "bug_count", "performance_count"]
+        similarities = []
+        
+        for metric in metrics:
+            curr_val = current_summary.get(metric, 0)
+            prev_val = previous_summary.get(metric, 0)
+            
+            if curr_val == prev_val == 0:
+                similarities.append(1.0)
+            elif curr_val == 0 or prev_val == 0:
+                similarities.append(0.0)
+            else:
+                # Normalize difference
+                similarity = 1.0 - abs(curr_val - prev_val) / max(curr_val, prev_val)
+                similarities.append(similarity)
+                
+        return sum(similarities) / len(similarities) if similarities else 0.0
+        
+    def _extract_review_summary(self, reviews: List[Dict]) -> Dict[str, int]:
+        """Extract key metrics from a set of reviews for convergence analysis."""
+        summary = {
+            "total_findings": 0,
+            "critical_count": 0,
+            "high_count": 0,
+            "medium_count": 0,
+            "low_count": 0,
+            "bug_count": 0,
+            "performance_count": 0,
+            "style_count": 0,
+            "maintainability_count": 0
+        }
+        
+        for review in reviews:
+            findings = review.get("findings", [])
+            summary["total_findings"] += len(findings)
+            
+            for finding in findings:
+                severity = finding.get("severity", "").lower()
+                if severity in summary:
+                    summary[f"{severity}_count"] += 1
+                    
+                finding_type = finding.get("type", "").lower()
+                if finding_type in ["bug", "performance", "style", "maintainability"]:
+                    summary[f"{finding_type}_count"] += 1
+                    
+        return summary
+        
+    def _anonymize_reviews(self, reviews: List[Dict]) -> List[Dict]:
+        """Create anonymized versions of reviews for consensus iteration."""
+        anonymized = []
+        for i, review in enumerate(reviews):
+            anon_review = copy.deepcopy(review)
+            # Remove model-specific metadata while keeping content
+            anon_review.pop("model_info", None)
+            anon_review.pop("temperature", None)
+            anon_review["review_id"] = f"peer_{i+1}"
+            anonymized.append(anon_review)
+        return anonymized
+        
+    def _summarize_iteration(self, iteration_data: Dict) -> str:
+        """Create a brief summary of an iteration for context."""
+        worker_count = len(iteration_data.get("worker_reviews", []))
+        supervisor = iteration_data.get("supervisor_result", {})
+        winner_idx = supervisor.get("winner_index")
+        
+        return f"Iteration {iteration_data['iteration']}: {worker_count} workers, winner={winner_idx}"
+        
+    def _get_convergence_indicators(self, iteration_data: Dict) -> Dict[str, Any]:
+        """Extract convergence indicators from iteration data."""
+        reviews = iteration_data.get("worker_reviews", [])
+        summary = self._extract_review_summary(reviews)
+        
+        return {
+            "finding_count": summary["total_findings"],
+            "critical_issues": summary["critical_count"],
+            "consensus_strength": len(reviews)  # Simple metric for now
+        }
+        
+    def _analyze_improvement_trajectory(self) -> Dict[str, Any]:
+        """Analyze how reviews improved across iterations."""
+        if len(self.iteration_history) < 2:
+            return {"trend": "insufficient_data"}
+            
+        trajectories = {
+            "finding_counts": [],
+            "critical_counts": [],
+            "quality_scores": []
+        }
+        
+        for iteration in self.iteration_history:
+            reviews = iteration.get("worker_reviews", [])
+            summary = self._extract_review_summary(reviews)
+            
+            trajectories["finding_counts"].append(summary["total_findings"])
+            trajectories["critical_counts"].append(summary["critical_count"])
+            
+            # Quality score based on supervisor analysis
+            supervisor = iteration.get("supervisor_result", {})
+            scores = supervisor.get("scores", [])
+            if scores:
+                avg_score = sum(sum(s.get("accuracy", 0) + s.get("completeness", 0) + 
+                                  s.get("clarity", 0) + s.get("insightfulness", 0) 
+                                  for s in scores)) / (len(scores) * 4)
+                trajectories["quality_scores"].append(avg_score)
+            else:
+                trajectories["quality_scores"].append(0.0)
+                
+        return {
+            "trend": self._determine_trend(trajectories["quality_scores"]),
+            "trajectories": trajectories,
+            "final_quality": trajectories["quality_scores"][-1] if trajectories["quality_scores"] else 0.0
+        }
+        
+    def _determine_trend(self, values: List[float]) -> str:
+        """Determine if values show improving, declining, or stable trend."""
+        if len(values) < 2:
+            return "insufficient_data"
+            
+        if values[-1] > values[0] * 1.1:
+            return "improving"
+        elif values[-1] < values[0] * 0.9:
+            return "declining"
+        else:
+            return "stable"
+            
+    def _identify_best_iteration(self) -> Dict[str, Any]:
+        """Identify which iteration produced the best results."""
+        if not self.iteration_history:
+            return {"iteration": 0, "reason": "no_iterations"}
+            
+        best_iteration = 1
+        best_score = 0.0
+        
+        for i, iteration in enumerate(self.iteration_history, 1):
+            supervisor = iteration.get("supervisor_result", {})
+            scores = supervisor.get("scores", [])
+            
+            if scores:
+                # Calculate average quality score
+                total_score = sum(
+                    s.get("accuracy", 0) + s.get("completeness", 0) + 
+                    s.get("clarity", 0) + s.get("insightfulness", 0) 
+                    for s in scores
+                )
+                avg_score = total_score / (len(scores) * 4) if scores else 0.0
+                
+                if avg_score > best_score:
+                    best_score = avg_score
+                    best_iteration = i
+                    
+        return {
+            "iteration": best_iteration,
+            "score": best_score,
+            "reason": "highest_quality_score"
+        }
+        
+    def _get_timestamp(self) -> str:
+        """Get current timestamp for iteration tracking."""
+        import datetime
+        return datetime.datetime.now().isoformat()
