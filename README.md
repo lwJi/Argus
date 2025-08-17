@@ -44,6 +44,12 @@ python src/Argus <directory> --skip-preflight
 # Use Linus Torvalds review style with systematic analysis
 python src/Argus <directory> --linus-mode
 
+# Iterative multi-agent review with 3 rounds
+python src/Argus <directory> --iterations 3
+
+# Iterative review with feedback-driven strategy
+python src/Argus <directory> --iterations 3 --iteration-strategy feedback_driven
+
 # Adjust chunking for large files
 python src/Argus <directory> --chunk-size 300 --chunk-threshold 400
 ```
@@ -77,6 +83,39 @@ File → Chunks → Workers → Supervisor → Synthesizer → Final Report
 - **C++ prompts**: Focus on RAII, const-correctness, memory safety, C++ Core Guidelines
 - **Python prompts**: Emphasize PEP 8/20, type hints, performance patterns
 - **Generic prompts**: General code quality patterns for other languages
+
+### Iterative Multi-Agent Review (`--iterations`)
+
+Performs multiple rounds of review with convergence detection for enhanced analysis quality:
+
+```bash
+# Run 3 iterations with worker pool strategy (default)
+python src/Argus <directory> --iterations 3
+
+# Use feedback-driven strategy where supervisor guides next iteration
+python src/Argus <directory> --iterations 3 --iteration-strategy feedback_driven
+
+# Use consensus strategy where workers see previous peer reviews
+python src/Argus <directory> --iterations 3 --iteration-strategy consensus
+
+# Custom convergence threshold for early stopping
+python src/Argus <directory> --iterations 5 --convergence-threshold 0.9
+```
+
+**Three Iteration Strategies:**
+1. **Worker Pool** (`worker_pool`): Different models/temperatures each iteration for diverse perspectives
+2. **Feedback Driven** (`feedback_driven`): Supervisor feedback from previous iteration guides worker improvements
+3. **Consensus** (`consensus`): Workers see anonymized peer reviews from previous iteration
+
+**Convergence Detection:**
+- Automatically stops early when reviews converge (similarity above threshold)
+- Prevents unnecessary API calls when quality plateaus
+- Tracks improvement trajectory across iterations
+
+**Enhanced Output:**
+- Cross-iteration synthesis showing evolution of findings
+- Best iteration identification with confidence metrics
+- Improvement trajectory analysis and convergence indicators
 
 ### Linus Review Mode (`--linus-mode`)
 
@@ -126,6 +165,13 @@ Each review produces:
 - `fatal_problems`: Critical issues with direct technical criticism
 - `key_insights`: Data structure analysis, complexity removal opportunities, risk assessment
 - `linus_analysis`: Complete 5-level systematic breakdown
+
+### Iterative Mode Additional Fields
+- `iteration_analysis`: Cross-iteration synthesis with total iterations, convergence status, quality trends
+- `best_iteration`: Identification of highest-quality iteration with reasoning
+- `improvement_trajectory`: Analysis of how findings evolved across iterations
+- `convergence_metrics`: Stability indicators and similarity scores between iterations
+- `best_findings`: Consolidated insights with source iteration and evolution tracking
 
 ## Error Handling
 
