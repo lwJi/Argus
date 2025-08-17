@@ -113,3 +113,119 @@ def sample_supervisor_response():
         "merged_takeaways": ["Add input validation"],
         "winning_review_text": "Sample winning review"
     }
+
+@pytest.fixture
+def sample_linus_response():
+    """Sample Linus mode worker agent JSON response."""
+    return {
+        "pre_analysis": {
+            "real_problem": "Yes, potential memory safety issues",
+            "simpler_way": "Use smart pointers instead of raw pointers",
+            "breaks_compatibility": "No, this is internal implementation"
+        },
+        "taste_score": "so-so",
+        "fatal_problems": [
+            "Raw pointer without proper RAII management",
+            "Potential buffer overflow in loop bounds"
+        ],
+        "key_insights": {
+            "data_structure": "Vector iteration with manual bounds checking",
+            "complexity_removal": "Replace manual loop with range-based for",
+            "risk_assessment": "High - memory safety violations likely"
+        },
+        "core_judgment": "worth_doing",
+        "linus_analysis": {
+            "data_structure_analysis": "The core data is a vector, but we're accessing it with manual indexing",
+            "special_case_elimination": "The <= instead of < creates a special boundary case",
+            "complexity_review": "This 5-line loop can become a 1-line range-based for",
+            "destructiveness_analysis": "Changes are internal, no API breakage",
+            "practicality_verification": "Real bug - will crash in production"
+        },
+        "improvement_direction": [
+            "Replace manual loop with range-based for iteration",
+            "Use smart pointers for automatic memory management",
+            "Add const-correctness to prevent accidental modification"
+        ]
+    }
+
+@pytest.fixture
+def sample_iterative_supervisor_response():
+    """Sample iterative supervisor agent JSON response."""
+    return {
+        "analysis": "Review quality improved from iteration 1, convergence detected",
+        "scores": [
+            {
+                "review_index": 1,
+                "accuracy": 0.95,
+                "completeness": 0.9,
+                "clarity": 0.9,
+                "insightfulness": 0.8,
+                "notes": "Excellent bug detection with context from previous iteration"
+            }
+        ],
+        "winner_index": 1,
+        "merged_takeaways": ["Use RAII patterns", "Add bounds checking"],
+        "winning_review_text": "Comprehensive review building on previous findings",
+        "iteration_comparison": {
+            "improvement_over_previous": "Better context understanding and more specific suggestions",
+            "convergence_indicators": "Similar findings with higher confidence",
+            "quality_delta": 0.15
+        },
+        "feedback_for_next_iteration": "Focus on performance implications of suggested changes"
+    }
+
+@pytest.fixture
+def sample_iteration_metadata():
+    """Sample iteration metadata for testing."""
+    return {
+        "total_iterations": 3,
+        "convergence_achieved": True,
+        "strategy_used": "worker_pool",
+        "improvement_trajectory": {
+            "trend": "improving",
+            "trajectories": {
+                "quality_scores": [0.7, 0.82, 0.85],
+                "finding_counts": [3, 4, 4],
+                "critical_counts": [1, 2, 2]
+            },
+            "final_quality": 0.85
+        },
+        "best_iteration": {
+            "iteration": 3,
+            "reason": "highest_quality_score"
+        }
+    }
+
+@pytest.fixture
+def sample_complex_code():
+    """Sample complex code that would benefit from iteration."""
+    return '''class NetworkManager:
+    def __init__(self):
+        self.connections = []
+        self.timeout = None
+        
+    def connect(self, host, port):
+        # Multiple potential issues for iterative discovery
+        if host == None:  # Should use 'is None'
+            return False
+        if port < 0 or port > 65535:
+            raise Exception("Invalid port")  # Should be more specific
+        
+        conn = self.create_connection(host, port)
+        self.connections.append(conn)
+        return True
+        
+    def create_connection(self, host, port):
+        # Resource leak potential
+        import socket
+        s = socket.socket()
+        s.settimeout(self.timeout or 30)
+        s.connect((host, port))  # No error handling
+        return s
+        
+    def disconnect_all(self):
+        # Potential double-close issue
+        for conn in self.connections:
+            conn.close()
+        del self.connections[:]  # Pythonic: self.connections.clear()
+'''
