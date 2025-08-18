@@ -33,25 +33,25 @@ Argus requires `OPENAI_API_KEY`. It will look for environment variables in:
 
 ```bash
 # Basic usage - review all C++/Python files in a directory
-python src/Argus <directory>
+python src/Argus.py <directory>
 
 # With custom extensions and output directory
-python src/Argus <directory> --extensions .cpp .py .js --save-dir reviews
+python src/Argus.py <directory> --extensions .cpp .py .js --save-dir reviews
 
 # Skip token estimation prompt (for automation)
-python src/Argus <directory> --skip-preflight
+python src/Argus.py <directory> --skip-preflight
 
 # Use Linus Torvalds review style with systematic analysis
-python src/Argus <directory> --linus-mode
+python src/Argus.py <directory> --linus-mode
 
 # Iterative multi-agent review with 3 rounds
-python src/Argus <directory> --iterations 3
+python src/Argus.py <directory> --iterations 3
 
 # Iterative review with feedback-driven strategy
-python src/Argus <directory> --iterations 3 --iteration-strategy feedback_driven
+python src/Argus.py <directory> --iterations 3 --iteration-strategy feedback_driven
 
 # Adjust chunking for large files
-python src/Argus <directory> --chunk-size 300 --chunk-threshold 400
+python src/Argus.py <directory> --chunk-size 300 --chunk-threshold 400
 ```
 
 ## Architecture Overview
@@ -90,16 +90,16 @@ Performs multiple rounds of review with convergence detection for enhanced analy
 
 ```bash
 # Run 3 iterations with worker pool strategy (default)
-python src/Argus <directory> --iterations 3
+python src/Argus.py <directory> --iterations 3
 
 # Use feedback-driven strategy where supervisor guides next iteration
-python src/Argus <directory> --iterations 3 --iteration-strategy feedback_driven
+python src/Argus.py <directory> --iterations 3 --iteration-strategy feedback_driven
 
 # Use consensus strategy where workers see previous peer reviews
-python src/Argus <directory> --iterations 3 --iteration-strategy consensus
+python src/Argus.py <directory> --iterations 3 --iteration-strategy consensus
 
 # Custom convergence threshold for early stopping
-python src/Argus <directory> --iterations 5 --convergence-threshold 0.9
+python src/Argus.py <directory> --iterations 5 --convergence-threshold 0.9
 ```
 
 **Three Iteration Strategies:**
@@ -196,7 +196,7 @@ pytest --cov=src tests/
 
 ### Key Files
 
-- `src/Argus`: Main CLI orchestrator with async processing pipeline
+- `src/Argus.py`: Main CLI orchestrator with async processing pipeline
 - `src/agents.py`: Core agent implementations and retry/repair logic  
 - `src/prompts.py`: Language-specific prompt templates and JSON schemas
 - `src/utils.py`: File processing, chunking, token estimation utilities

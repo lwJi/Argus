@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ### Commands
 ```bash
 # Basic usage
-python src/Argus <directory>
+python src/Argus.py <directory>
 
 # Development
 pytest                                    # Run tests
@@ -26,12 +26,12 @@ File → Chunks → Workers → Supervisor → Synthesizer → Final Report
 - **Worker Agents** (`src/agents.py:84-128`): Language-specific analysis with different temperatures
 - **Supervisor Agent** (`src/agents.py:130-154`): Multi-dimensional scoring for best review selection
 - **Synthesizer Agent** (`src/agents.py:156-166`): Combines winning reviews into markdown
-- **File Processing** (`src/Argus:178-255`): Chunking logic (400 lines/chunk default)
+- **File Processing** (`src/Argus.py:178-255`): Chunking logic (400 lines/chunk default)
 - **Token Management** (`src/utils.py:128-151`): Uses tiktoken for preflight estimation
 
 ## Key Files & Functions
 
-- `src/Argus`: Main CLI orchestrator with async processing pipeline
+- `src/Argus.py`: Main CLI orchestrator with async processing pipeline
 - `src/agents.py`: Core agent implementations and retry/repair logic  
   - `WorkerAgent._pick_worker_prompt()`: Language-specific prompt selection
   - `JSON_REPAIR_PROMPT`: AI-powered malformed JSON repair
@@ -59,7 +59,7 @@ To add new systematic review approaches:
 1. Create new prompt template in `src/prompts.py` following `WORKER_PROMPT_LINUS` pattern
 2. Add corresponding JSON schema for structured output format
 3. Update `agents.py:_pick_worker_prompt()` to include new mode selection
-4. Add CLI flag in `src/Argus` for enabling the new mode
+4. Add CLI flag in `src/Argus.py` for enabling the new mode
 5. Update configuration examples in `models.yaml`
 
 ### Token Management

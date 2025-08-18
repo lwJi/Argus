@@ -1,5 +1,5 @@
 # Example rate limiting configuration for Argus
-# Use with: python src/Argus <directory> --rate-limit-mode custom --rate-limit-config rate_limits.yaml
+# Use with: python src/Argus.py <directory> --rate-limit-mode custom --rate-limit-config rate_limits.yaml
 
 rate_limits:
   # GPT-4o configuration
