@@ -329,7 +329,8 @@ async def review_single_file(
     linus_mode: bool = False,
     iterations: int = 1,
     iteration_strategy: str = "worker_pool",
-    convergence_threshold: float = 0.8
+    convergence_threshold: float = 0.8,
+    retain_full_iteration_data: bool = False
 ):
     # Read file
     try:
@@ -373,7 +374,7 @@ async def review_single_file(
                     max_iterations=iterations,
                     strategy=strategy_enum,
                     convergence_threshold=convergence_threshold,
-                    retain_full_data=args.retain_full_iteration_data
+                    retain_full_data=retain_full_iteration_data
                 )
                 
                 summary, iter_workers_json, iter_sup_json = await review_chunk_iterative(
@@ -850,7 +851,8 @@ async def main():
             linus_mode=args.linus_mode,
             iterations=args.iterations,
             iteration_strategy=args.iteration_strategy,
-            convergence_threshold=args.convergence_threshold
+            convergence_threshold=args.convergence_threshold,
+            retain_full_iteration_data=args.retain_full_iteration_data
         )
     
     # Show final rate limiting statistics
