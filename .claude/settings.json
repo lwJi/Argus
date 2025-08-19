@@ -5,7 +5,8 @@
       "Read(./.env)",
       "Read(./.env.*)",
       "Read(./examples/**)",
-      "Read(./LICENSE)"
+      "Read(./LICENSE)",
+      "Read(./AGENTS.md)"
     ]
   }
 }
